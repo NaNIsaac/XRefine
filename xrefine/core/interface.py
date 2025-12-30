@@ -59,6 +59,18 @@ class Simulator(nn.Module):
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
+    def simulate_sample(self, q: Tensor, sample: 'Sample', instrument: 'Instrument' = None) -> Tensor:
+        """
+        Simulate reflectivity for a Sample object.
+        """
+        thickness, roughness, sld = sample.to_tensor(device=self.device, batch_size=q.shape[0] if q.dim() > 1 else 1)
+        
+        dq = None
+        if instrument is not None and instrument.res > 0:
+            dq = torch.tensor([[instrument.res]], device=self.device).expand(thickness.shape[0], 1)
+            
+        return self(q, thickness, roughness, sld, dq=dq)
+
     def simulate(self, *args, **kwargs):
         """Alias for forward."""
         return self(*args, **kwargs)

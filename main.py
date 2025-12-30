@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
 from xrefine.simulator import simulate_reflectivity
 

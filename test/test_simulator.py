@@ -1,11 +1,6 @@
 import torch
-import torch.nn as nn
-import matplotlib.pyplot as plt
-import time
 
-from xrefine.simulator.interface import Simulator
-from xrefine.simulator.abeles import abeles
-from xrefine.simulator.kinematical import kinematical_approximation
+from xrefine.core.interface import Simulator
 
 def test_forward_pass():
     print("Testing Forward Pass...")

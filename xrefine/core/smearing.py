@@ -45,41 +45,28 @@ def abeles_constant_smearing(
     curves = abeles_func(q_lin, thickness, roughness, sld)
 
     # Convolve with resolution kernel
-    # Use torch.conv1d. 
-    # Input: (batch, 1, signal_length)
-    # Weight: (batch, 1, kernel_size) - but conv1d expects (out_channels, in_channels/groups, kernel_size)
-    # We want group convolution where each batch item has its own kernel.
+    # Use torch.conv1d with groups=batch_size to apply different kernels per sample.
+    # To do this, we treat the batch dimension as channels.
+    # Input shape required: (1, batch_size, length)
+    # Weight shape required: (batch_size, 1, kernel_size)
     
     padding = (kernels.shape[-1] - 1) // 2
     
-    # Prepare input: (1, batch, length) if we treat batch as channels? 
-    # Or (batch, 1, length) and groups=batch?
-    
-    # Correct approach for per-sample kernel:
-    # input: (batch, 1, length)
-    # weight: (batch, 1, kernel_size)
-    # groups = batch
-    
-    # The existing code was doing:
-    # pad(curves[None], ...) -> (1, batch, length) ?? No.
-    # curves[None] is (1, batch, q_lin_num)
-    
-    # Let's align carefully.
-    # We want output (batch, q_lin_num).
-    
-    inp = curves.unsqueeze(1) # (batch, 1, q_lin_num)
+    # curves: (batch, q_lin_num)
+    # reshape to (1, batch, q_lin_num)
+    inp = curves.unsqueeze(0) 
     inp_padded = F.pad(inp, (padding, padding), mode="reflect")
     
-    # Weights need to be (batch, 1, kernel_size) for groups=batch
-    w = kernels.unsqueeze(1) # (batch, 1, kernel_size)
+    # Weights: (batch, 1, kernel_size)
+    w = kernels.unsqueeze(1)
     
     smeared_curves = F.conv1d(
         inp_padded,
         w,
         groups=batch_size,
-    ) # (batch, 1, q_lin_num)
+    ) # Output: (1, batch, q_lin_num)
     
-    smeared_curves = smeared_curves.squeeze(1) # (batch, q_lin_num)
+    smeared_curves = smeared_curves.squeeze(0) # (batch, q_lin_num)
 
     # Interpolate back to original Q
     # q might be (batch, num_q)

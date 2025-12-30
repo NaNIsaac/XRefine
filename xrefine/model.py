@@ -3,7 +3,7 @@ import torch.nn as nn
 from xrefine.simulator.interface import Simulator
 
 class XRRParameterEncoder(nn.Module):
-    def __init__(self, q_len, n_layers=1):
+    def __init__(self, n_layers=1):
         super().__init__()
         self.n_layers = n_layers
 
@@ -16,7 +16,6 @@ class XRRParameterEncoder(nn.Module):
             nn.LeakyReLU(0.2),
             nn.AdaptiveAvgPool1d(8)
         )
-        
 
         self.regressor = nn.Linear(64 * 8, 3 * n_layers + 2)
 
@@ -35,7 +34,7 @@ class XRR_PINN(nn.Module):
     def __init__(self, q_grid, n_layers=1, device='cpu'):
         super().__init__()
         self.q_grid = q_grid.to(device)
-        self.encoder = XRRParameterEncoder(q_len=len(q_grid), n_layers=n_layers)
+        self.encoder = XRRParameterEncoder(n_layers=n_layers)
         self.simulator = Simulator(method='abeles', device=device)
         self.device = device
 
@@ -48,17 +47,15 @@ class XRR_PINN(nn.Module):
         
         return (thick, rough, sld), r_sim
 
-# --- 학습 및 추론 예시 ---
 def train_pinn_step(pinn_model, r_measured, optimizer):
     pinn_model.train()
     optimizer.zero_grad()
 
     params, r_reconstructed = pinn_model(r_measured)
-    
-    loss = nn.MSELoss()(torch.log10(r_measured + 1e-12), 
-                        torch.log10(r_reconstructed + 1e-12))
-    
+
+    loss = nn.MSELoss()(torch.log10(r_measured + 1e-12), torch.log10(r_reconstructed + 1e-12))
+
     loss.backward()
     optimizer.step()
-    
+
     return loss.item(), params
