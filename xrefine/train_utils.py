@@ -94,3 +94,29 @@ def save_pinn_report(q_grid, r_target, r_recon, loss_history, params_pred, param
     plt.tight_layout()
     plt.savefig(save_path, dpi=120)
     plt.close()
+
+def plot_learning_curves(history, save_path):
+    """
+    Train/Val Loss 수렴 과정을 시각화
+    - history: {'train': [...], 'val': [...]}
+    """
+    plt.figure(figsize=(10, 6))
+    train_loss = history.get('train', [])
+    val_loss = history.get('val', [])
+    
+    epochs = range(1, len(train_loss) + 1)
+    
+    plt.plot(epochs, train_loss, 'b-', label='Train Loss', alpha=0.7)
+    if val_loss:
+        plt.plot(epochs, val_loss, 'r-', label='Val Loss', alpha=0.7)
+        
+    plt.yscale('log') # XRR 특성상 Log scale 필수
+    plt.title("Model Convergence (PINN Learning Dynamics)", fontsize=14)
+    plt.xlabel("Epochs / Steps")
+    plt.ylabel("Total Loss (Log Scale)")
+    plt.legend()
+    plt.grid(True, which='both', alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()

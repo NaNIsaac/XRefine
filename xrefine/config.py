@@ -65,9 +65,9 @@ class XRefineConfig(BaseModel):
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 하이브리드 가중치 (Warmup)
-    sup_w_start: float = 10.0    # 초반에는 정답 파라미터 강제 주입
-    sup_w_end: float = 1.0       # 후반에는 물리 법칙에 자율성 부여
-    warmup_steps: int = 3000     # 안정적인 정착을 위해 3000으로 상향
+    sup_w_start: float = 100.0    # 초반에는 정답 파라미터 강제 주입
+    sup_w_end: float = 10.0       # 후반에는 물리 법칙에 자율성 부여
+    warmup_steps: int = 10000   # 안정적인 정착을 위해 3000으로 상향
     sld_weight_factor: float = 5.0 # 두께보다 SLD 정답을 5배 더 강하게 교육 (Trade-off 방지)
 
     # --- 모델 아키텍처 설정 ---

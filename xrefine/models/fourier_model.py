@@ -121,7 +121,7 @@ class XRR_Fourier_PINN(nn.Module):
         # [Instrumental] - nan 방지를 위해 clamp 추가
         L_norm = torch.clamp(out[:, 5:6], 0.001, 0.999) 
         L = L_norm * (cfg.sample_len_max - cfg.sample_len_min) + cfg.sample_len_min
-
+        L = torch.clamp(L, min=cfg.sample_len_min, max=20.0)
         log_bkg_norm = torch.clamp(out[:, 6:7], 0.001, 0.999)
         log_bkg = log_bkg_norm * (cfg.augmentations.bg_range[1] - cfg.augmentations.bg_range[0]) + cfg.augmentations.bg_range[0]
         
