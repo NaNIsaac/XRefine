@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from xrefine.core.interface import Simulator
 from xrefine.core.corrections import DifferentiableFootprint
-from .config import Config
+from .config import CONFIG
 
 class XRRParameterEncoder(nn.Module):
     def __init__(self, n_layers=1):
@@ -21,22 +21,26 @@ class XRRParameterEncoder(nn.Module):
         if x.dim() == 2: x = x.unsqueeze(1)
         feat = self.encoder(x).view(x.size(0), -1)
         out = torch.sigmoid(self.regressor(feat))
-        
-        # Anti-gravity: 물리 범위 강제 구속
-        thick = out[:, 0:1] * (Config.THICK_RANGE[1] - Config.THICK_RANGE[0]) + Config.THICK_RANGE[0]
-        rough = out[:, 1:2] * (Config.ROUGH_RANGE[1] - Config.ROUGH_RANGE[0]) + Config.ROUGH_RANGE[0]
-        sld   = out[:, 2:3] * (Config.SLD_RANGE[1] - Config.SLD_RANGE[0]) + Config.SLD_RANGE[0]
-        
+
+        # 물리 범위 강제 구속
+        thick_range = CONFIG['thick_range']
+        rough_range = CONFIG['rough_range']
+        sld_range = CONFIG['sld_range']
+
+        thick = out[:, 0:1] * (thick_range[1] - thick_range[0]) + thick_range[0]
+        rough = out[:, 1:2] * (rough_range[1] - rough_range[0]) + rough_range[0]
+        sld   = out[:, 2:3] * (sld_range[1] - sld_range[0]) + sld_range[0]
+
         # 기기 오차 예측 (L: 10~40mm, I0_scale: 0.5~2.0)
         s_len = out[:, 3:4] * 30.0 + 10.0
         i0_scale = out[:, 4:5] * 1.5 + 0.5
         
         return thick, rough, sld, s_len, i0_scale
 
-class XRR_PINN_V3(nn.Module):
+class XRR_PINN(nn.Module):
     def __init__(self, n_layers=1, device='cpu'):
         super().__init__()
-        self.q_grid = Config.Q_GRID.to(device)
+        self.q_grid = CONFIG['q_grid'].to(device)
         self.encoder = XRRParameterEncoder(n_layers=n_layers)
         self.simulator = Simulator(method='abeles', device=device)
         self.footprint = DifferentiableFootprint()

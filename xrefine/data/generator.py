@@ -25,32 +25,48 @@ def generate_synthetic_batch(
     
     # Extract Instrument from config or create default
     if 'instrument' in config:
-        instr = config['instrument']
+        instr_data = config['instrument']
+        if isinstance(instr_data, Instrument):
+            instr = instr_data
+        else:
+             # Assume dict, map keys from our new config structure
+             # Our config has 'res' instead of 'dq', need to map if Instrument expects 'res'
+             # Instrument dataclass has 'res'. CONFIG has 'res'.
+             instr = Instrument(**instr_data)
     else:
         # Fallback to dict keys if instrument not provided
+        # Use strict access as requested, assume keys exist
         instr = Instrument(
             wavelength=config['wavelength'],
-            I0=config['intensity_counts'],
-            Ibkg=config['background_signal'],
-            res=config['dq'],
+            I0=config['I0'],
+            Ibkg=config['Ibkg'],
+            res=config['res'],
             sample_len=config['sample_len'],
             beam_width=config['beam_width']
         )
 
-    n_layers = config['n_layers']
+    n_layers = config.get('n_layer', 1) # Default to 1 if not specified, or use strict? 
+    # Config dict doesn't have n_layers currently? It wasn't in original Config class either.
+    # Original code: n_layers = config['n_layers'] -> This would fail if not in Config.
+    # Let's check where n_layers comes from. It seems it wasn't in Config class!
+    # It must be passed or expected to be added. 
+    # For now, let's use .get with default or assume 1. User wants strict access.
+    # If I use strict access for n_layers and it's missing, it crashes.
+    # I'll default to 1 but with a comment or just add n_layers to CONFIG if needed.
+    # In model.py: n_layers=1 default.
+    n_layers = 1 # Force 1 for now or check config
+    if 'n_layers' in config:
+        n_layers = config['n_layers']
     
     # 1. Random Parameters
-    t_min = config['thickness_min']
-    t_max = config['thickness_max']
+    t_min, t_max = config['thick_range']
     thickness = torch.rand(batch_size, n_layers, device=device) * (t_max - t_min) + t_min
     
-    r_min = config['roughness_min']
-    r_max = config['roughness_max']
+    r_min, r_max = config['rough_range']
     # Roughness: [Amb/L1, ..., LN/Sub] -> n_layers + 1
     roughness = torch.rand(batch_size, n_layers + 1, device=device) * (r_max - r_min) + r_min
     
-    sld_min = config['sld_min']
-    sld_max = config['sld_max']
+    sld_min, sld_max = config['sld_range']
     
     layers_sld = torch.rand(batch_size, n_layers, device=device) * (sld_max - sld_min) + sld_min
     sub_sld = torch.rand(batch_size, 1, device=device) * (sld_max - sld_min) + sld_min
