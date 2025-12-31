@@ -1,6 +1,5 @@
 import torch
-import numpy as np
-from xrefine.core.structures import Instrument, Sample, Layer, Experiment
+from xrefine.core.structures import Instrument, Sample, Layer
 from xrefine.core.interface import Simulator
 from xrefine.data.generator import generate_synthetic_batch
 

@@ -4,7 +4,7 @@ from torch import Tensor
 import numpy as np
 
 from xrefine.core.interface import Simulator
-from xrefine.core.structures import Instrument, Layer, Sample, Experiment
+from xrefine.core.structures import Instrument
 
 def generate_synthetic_batch(
     batch_size: int,

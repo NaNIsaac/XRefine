@@ -179,11 +179,11 @@ def get_max_allowed_roughness(
 
 
 def _get_erf(z, z0, sigma, amp):
-    return (torch.erf((z - z0) / sigma) + 1) * amp / 2
+    return (torch.erf((z - z0) / (sigma + 1e-8)) + 1) * amp / 2
 
 
 def _get_gauss(z, z0, sigma, amp):
-    return amp / (sigma * sqrt(2 * pi)) * torch.exp(-((z - z0) ** 2) / 2 / sigma**2)
+    return amp / ((sigma + 1e-8) * sqrt(2 * pi)) * torch.exp(-((z - z0) ** 2) / 2 / (sigma + 1e-8)**2)
 
 
 def angle_to_q(scattering_angle: ndarray or float, wavelength: float):

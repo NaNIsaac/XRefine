@@ -1,6 +1,6 @@
 import numpy as np
 
-from xrefine.simulator import simulate_reflectivity
+from xrefine.core import simulate_reflectivity
 
 
 def main():
