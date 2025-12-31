@@ -65,12 +65,12 @@ class XRefineConfig(BaseModel):
     sup_w_start: float = 1000.0
     sup_w_end: float = 10.0
     warmup_steps: int = 3000
-    sld_weight_factor: float = 5.0 # 두께보다 SLD 정답을 5배 더 강하게 교육 (Trade-off 방지)
+    sld_weight_factor: float = 3.0
 
     # --- 모델 아키텍처 설정 ---
     model_type: Literal['pinn', 'fourier'] = 'fourier'
     n_layers: int = 1
-    fourier_scale: float = 30.0
+    fourier_scale: float = 40.0
     hidden_dim: int = 512
 
     # --- 런타임 계산 속성 (Serialization 무시) ---
