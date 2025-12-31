@@ -7,6 +7,8 @@ from torch import Tensor
 from .abeles import abeles
 from .kinematical import kinematical_approximation
 from .smearing import abeles_constant_smearing
+from .structures import Sample, Instrument
+
 
 class Simulator(nn.Module):
     """
@@ -14,12 +16,11 @@ class Simulator(nn.Module):
     
     Supports both dynamic calculation (standard XRR) and optimization (PINN/fitting).
     """
-    
     def __init__(self, method: str = 'abeles', device: str | torch.device = 'cpu'):
         super().__init__()
         self.method = method
         self.device = torch.device(device)
-        
+
     def forward(
         self,
         q: Tensor,
@@ -62,16 +63,16 @@ class Simulator(nn.Module):
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
-    def simulate_sample(self, q: Tensor, sample: 'Sample', instrument: 'Instrument' = None) -> Tensor:
+    def simulate_sample(self, q: Tensor, sample: Sample, instrument: Instrument | None = None) -> Tensor:
         """
         Simulate reflectivity for a Sample object.
         """
         thickness, roughness, sld = sample.to_tensor(device=self.device, batch_size=q.shape[0] if q.dim() > 1 else 1)
-        
+
         dq = None
         if instrument is not None and instrument.res > 0:
             dq = torch.tensor([[instrument.res]], device=self.device).expand(thickness.shape[0], 1)
-            
+
         return self(q, thickness, roughness, sld, dq=dq)
 
     def simulate(self, *args, **kwargs):

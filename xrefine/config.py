@@ -1,8 +1,11 @@
-from typing import Literal, Tuple
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, ConfigDict
 import torch
 import numpy as np
 import yaml
+
+from xrefine.core.structures import ParamSet
 
 # --- 물리 상수 및 유틸리티 ---
 def tth2q(tth: float, wavelength: float = 1.5406) -> float:
@@ -30,8 +33,9 @@ class XRefineConfig(BaseModel):
     """전체 프로젝트 통합 설정 클래스"""
     
     # --- 실험 및 저장 경로 ---
-    experiment_name: str = 'test5'
-    save_root: str = r'D:\03_Resources\Data\XRR_AI\PINN'
+    experiment_name: str = 'test'
+    # save_root: str = r'D:\03_Resources\Data\XRR_AI\PINN'
+    save_root: str = r'C:\Warehouse\data\XRR_AI\PINN'
 
     # --- 물리적 측정 범위 (q-grid) ---
     q_min_tth: float = 0.05
@@ -39,16 +43,17 @@ class XRefineConfig(BaseModel):
     q_len: int = 2000
 
     # --- [Film] 메인 타겟 박막 범위 ---
-    thick_range: tuple[float, float] = (10.0, 600.0)  # N=1 레이어 현실적 범위
+    thick_range: tuple[float, float] = (10.0, 1000.0)
     rough_range: tuple[float, float] = (0.5, 20.0)
     sld_range: tuple[float, float] = (5.0, 100.0)
 
     # --- [SiO2] 하부 산화막 범위 (통일성을 위해 명시) ---
     sio2_thick_range: tuple[float, float] = (5.0, 50.0)
     sio2_rough_range: tuple[float, float] = (0.5, 10.0)
-    sio2_sld_range: tuple[float, float] = (14, 20)      # 실리콘 산화막 표준 SLD (고정 권장)
+    sio2_sld_range: tuple[float, float] = (14, 20)
 
     sample_len_range: tuple[float, float] = (9.0, 11.0)  # mm
+    beam_width_range: tuple[float, float] = (0.01, 0.3)  # mm
     substrate_sld: float = 20.1  # Si Substrate 고정
 
     # --- 서브 설정 객체 ---
@@ -67,12 +72,25 @@ class XRefineConfig(BaseModel):
     warmup_steps: int = 3000
     sld_weight_factor: float = 3.0
 
+    supervise_weight_params: ParamSet = {
+        "d_f": 1.0,
+        "sig_f": 1.0,
+        "rho_f": 1.0,
+        "d_ox": 1.0,
+        "sig_ox": 1.0,
+        "rho_ox": 1.0,
+        "i0": 1.0,
+        "bkg": 1.0,
+        "L": 5.0,
+        "beam_width": 20.0
+    }
     # --- 모델 아키텍처 설정 ---
     model_type: Literal['pinn', 'fourier'] = 'fourier'
     n_layers: int = 1
     fourier_scale: float = 40.0
     hidden_dim: int = 512
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     # --- 런타임 계산 속성 (Serialization 무시) ---
     @property
     def q_grid(self) -> torch.Tensor:

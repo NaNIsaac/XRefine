@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, TypedDict
 import torch
 from torch import Tensor
 import numpy as np
@@ -148,3 +148,24 @@ class FitTarget:
     obj: Any
     attr_name: str
     spec: FitParam
+
+
+class ParamSet[T: (torch.Tensor, float)](TypedDict):
+    """
+    XRR 분석에 필요한 모든 가변 변수 세트 (Batch Tensor 형태)
+    """
+    # 1. Main Film
+    d_f: T    # (B, N)
+    sig_f: T  # (B, N)
+    rho_f: T  # (B, N)
+
+    # 2. SiO2 Layer
+    d_ox: T   # (B, 1)
+    sig_ox: T # (B, 1)
+    rho_ox: T # (B, 1)
+
+    # 3. Instrumental Factors
+    L: T      # (B, 1) - Sample Length
+    i0: T     # (B, 1) - Intensity Scale
+    bkg: T    # (B, 1) - Background Log level
+    beam_width: T  # (B, 1) - Beam Width

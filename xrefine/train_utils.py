@@ -4,7 +4,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 
-# --- 1. Physics-Oriented Loss Functions ---
+from xrefine.core.structures import ParamSet
+from xrefine.config import XRefineConfig
+
 
 class QWeightedLogMSE(nn.Module):
     """
@@ -25,31 +27,22 @@ class QWeightedLogMSE(nn.Module):
         loss = self.mse(pred_log_r, target_log_r)
         return (loss * self.weights.unsqueeze(0)).mean()
 
-def compute_loss(params_pred, r_recon, target_log_r, params_true, config, curr_sup_w, phys_penalty):
+def compute_loss(params_pred: ParamSet, r_recon, target_log_r, params_true: ParamSet, config: XRefineConfig, curr_sup_w, phys_penalty):
     """
     8-파라미터 체계 전용 통합 손실 함수.
     """
     criterion = nn.MSELoss()
-    # 예측값 언팩 (8개)
-    d_f, sig_f, rho_f, d_ox, sig_ox, rho_ox, L, log_bkg = params_pred
-    # 정답값 언팩 (4개)
-    t_t, r_t, s_t, l_t = params_true 
 
     # 1. 그래프 재구성 손실 (Physics Loss)
     recon_log_r = torch.log10(torch.clamp(r_recon, min=1e-9))
     loss_recon = criterion(recon_log_r, target_log_r)
 
-    # 2. 파라미터 지도 학습 (Supervised Loss)
-    # s_t 인덱스: 0:Amb, 1:Film, 2:SiO2, 3:Sub
-    loss_param = criterion(d_f, t_t[:, 0:1]) + \
-                 criterion(sig_f, r_t[:, 0:1]) + \
-                 (config.sld_weight_factor * criterion(rho_f, s_t[:, 1:2])) + \
-                 criterion(d_ox, t_t[:, 1:2]) + \
-                 criterion(sig_ox, r_t[:, 1:2]) + \
-                 criterion(rho_ox, s_t[:, 2:3]) + \
-                 criterion(L, l_t) 
+    params_weights = config.supervise_weight_params
+    loss_param = sum(
+    (criterion(params_pred[k], params_true[k]) * params_weights[k] for k in params_pred.keys()),
+    torch.tensor(0.0, device=config.device)
+    )
 
-    # 3. 물리적 타당성 페널티 통합
     total_loss = loss_recon + (curr_sup_w * loss_param) + (10.0 * phys_penalty)
 
     return total_loss, loss_recon, loss_param, phys_penalty

@@ -38,6 +38,8 @@ class XRRAugmentations:
         self.do_footprint = do_footprint
         self.beam_profile = beam_profile
 
+        self.meta = {"I0": 1.0, "bkg": -8.0, "beam_width": None}
+
     def _gauss_footprint(self, theta_deg: np.ndarray, beam_w: float, sample_len: float) -> np.ndarray:
         """
         GenX's GaussIntensity logic implemented for NumPy.
@@ -82,7 +84,7 @@ class XRRAugmentations:
 
     def apply_footprint(self, q: np.ndarray, R: np.ndarray) -> np.ndarray:
         """Randomly apply beam width and sample length for low-angle intensity attenuation simulation."""
-        beam_w = np.random.uniform(*self.beam_width_range)
+        self.meta["beam_width"] = np.random.uniform(*self.beam_width_range)
         sample_len = np.random.uniform(*self.sample_len_range)
 
         wavelength = 1.54
@@ -91,16 +93,16 @@ class XRRAugmentations:
         theta_deg = np.degrees(np.arcsin(sin_theta))
 
         if self.beam_profile == 'square':
-            foocor = self._square_footprint(theta_deg, beam_w, sample_len)
+            foocor = self._square_footprint(theta_deg, self.meta["beam_width"], sample_len)
         else:
-            foocor = self._gauss_footprint(theta_deg, beam_w, sample_len)
+            foocor = self._gauss_footprint(theta_deg, self.meta["beam_width"], sample_len)
 
         return R * foocor
 
-    def __call__(self, q: np.ndarray, R: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def __call__(self, q: np.ndarray, R: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
         # Probability check
         if np.random.rand() > self.prob:
-            return q, R
+            return q, R, {"I0": 1.0, "bkg": -8.0}
 
         R_aug = R.copy()
 
@@ -121,12 +123,12 @@ class XRRAugmentations:
         
         # Global Scaling start
         scale = np.random.uniform(1 - self.intensity_noise_scale, 1 + self.intensity_noise_scale)
+        
         R_aug *= scale
 
         # Background Noise
-        bg_level = np.random.uniform(*self.bg_range)
         # Generate background
-        b = pow(10, np.random.uniform(bg_level, bg_level + 0.5)) 
+        b = pow(10, np.random.uniform(*self.bg_range)) 
         bg = np.random.normal(b, 0.1 * b, len(R_aug))
         
         R_aug = R_aug + np.abs(bg)
@@ -145,4 +147,6 @@ class XRRAugmentations:
             q_shift = np.random.normal(0, self.q_shift_sigma)
             R_aug = np.interp(q, q + q_shift, R_aug, left=R_aug[0], right=R_aug[-1])
 
-        return q, R_aug
+        self.meta['I0'] = scale
+        self.meta['bkg'] = np.log10(b)
+        return q, R_aug, self.meta

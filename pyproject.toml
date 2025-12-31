@@ -6,15 +6,15 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib",
-    "torch",
+    "torch==2.9.0",
     "tqdm",
     "pandas",
     "seaborn",
-    "scipy>=1.16.3",
-    "pydantic>=2.12.5",
-    "pyyaml>=6.0.3",
-    "genx3>=3.8.0",
-    "lib-platform>=1.2.10",
+    "scipy",
+    "pydantic",
+    "pyyaml",
+    "genx3",
+    "lib-platform",
 ]
 
 [[tool.uv.index]]

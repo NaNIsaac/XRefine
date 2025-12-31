@@ -11,10 +11,14 @@ def setup_training(args):
     """훈련을 위한 모델, 시뮬레이터, 트레이너 조립"""
     # 1. Config 병합 (Pydantic)
     config = CONFIG.model_copy()
-    if args.name: config.experiment_name = args.name
-    if args.lr: config.lr = args.lr
-    if args.layers: config.n_layers = args.layers
-    if args.warmup: config.warmup_steps = args.warmup
+    if args.name:
+        config.experiment_name = args.name
+    if args.lr:
+        config.lr = args.lr
+    if args.layers:
+        config.n_layers = args.layers
+    if args.warmup:
+        config.warmup_steps = args.warmup
 
     save_dir = Path(config.save_root) / config.experiment_name
     save_dir.mkdir(parents=True, exist_ok=True)

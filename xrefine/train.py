@@ -98,7 +98,7 @@ class XRefineTrainer:
             
             for r_meas, params_true in train_loader:
                 target_log_r = torch.log10(torch.clamp(r_meas, min=1e-9)).to(self.device)
-                params_true = [p.to(self.device) if torch.is_tensor(p) else p for p in params_true]
+                params_true = {k: v.to(self.device) for k, v in params_true.items()}
                 loss_val = self.train_step(target_log_r, params_true, curr_w)
                 epoch_loss += loss_val
                 pbar.set_postfix({'loss': f'{loss_val:.4f}'})
