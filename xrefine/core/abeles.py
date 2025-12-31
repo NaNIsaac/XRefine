@@ -94,8 +94,14 @@ def abeles(
     # element 1,1: exp_m_beta
     
     # Stack last dim to get (..., 2) then stack again to get (..., 2, 2)
-    row1 = torch.stack([exp_beta, rn * exp_m_beta], -1)
-    row2 = torch.stack([rn * exp_beta, exp_m_beta], -1)
+    # Stack last dim to get (..., 2) then stack again to get (..., 2, 2)
+    # Correct Matrix M_j = P_j * I_{j,j+1}
+    # P_j = diag(exp(beta), exp(-beta))
+    # I = [[1, r], [r, 1]]
+    # M_j = [[exp(beta), r*exp(beta)], [r*exp(-beta), exp(-beta)]]
+    
+    row1 = torch.stack([exp_beta, rn * exp_beta], -1)
+    row2 = torch.stack([rn * exp_m_beta, exp_m_beta], -1)
     c_matrices = torch.stack([row1, row2], -2) # (batch, q, layers+1, 2, 2)
 
     # Matrix multiplication

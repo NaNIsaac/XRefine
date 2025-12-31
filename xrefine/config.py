@@ -1,50 +1,73 @@
+from typing import Literal, Tuple
+from pydantic import BaseModel, Field
 import torch
+import numpy as np
 
-from physics_utils import tth2q
+# Utility for Q conversion
+def tth2q(tth: float, wavelength: float = 1.5406) -> float:
+    rad = np.deg2rad(0.5 * tth)
+    return float((4 * np.pi / wavelength) * np.sin(rad))
 
-# Configuration Dictionary
-CONFIG = {
-    'q_min': tth2q(0.05),
-    'q_max': tth2q(15.0),
-    'q_len': 2000,
+class InstrumentConfig(BaseModel):
+    wavelength: float = 1.5406
+    beam_width: float = 0.1      # mm
+    sample_len: float = 20.0     # mm
+    res: float = 0.002           # dq resolution
+    I0: float = 1e7              # Max Intensity
+    Ibkg: float = 1e-7           # Background level
 
-    # Experiment Settings
-    'experiment_name': 'test',
-    'save_root': 'D:\03_Resources\Data\XRR_AI\PINN',
+class AugmentationConfig(BaseModel):
+    intensity_noise_scale: float = 0.2
+    bg_range: Tuple[float, float] = (-8.0, -5.0)
+    res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
+    q_shift_sigma: float = 0.002
+    beam_profile: Literal['gaussian', 'square'] = 'gaussian'
+
+class XRefineConfig(BaseModel):
+    # Experiment
+    experiment_name: str = 'default_experiment'
+    save_root: str = r'experiments'
+
+    # Physics / Data
+    q_min_tth: float = 0.05
+    q_max_tth: float = 15.0
+    q_len: int = 2000
 
     # Ranges
-    'thick_range': (10.0, 1000.0),
-    'rough_range': (0.5, 15.0),
-    'sld_range': (5.0, 70.0),
+    thick_range: Tuple[float, float] = (10.0, 1000.0)
+    rough_range: Tuple[float, float] = (0.5, 15.0)
+    sld_range: Tuple[float, float] = (5.0, 70.0)
 
-    'instrument': {
-        'wavelength': 1.5406,
-        'beam_width': 0.1,      # mm
-        'sample_len': 20.0,     # mm
-        'res': 0.002,           # dq resolution
-        'I0': 1e7,              # Max Intensity
-        'Ibkg': 1e-7            # Background level
-    },
+    # Sub-configs
+    instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
+    augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
 
-    'batch_size': 32,
-    'lr': 2e-4,
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'apply_footprint': True,
-    
-    # Model Settings
-    'model_type': 'fourier', # 'pinn' or 'fourier'
-    'n_layers': 1,
-    'fourier_scale': 10.0,
-    'hidden_dim': 256,
-    
-    # Augmentation Settings
-    'augmentations': {
-        'intensity_noise_scale': 0.2,
-        'bg_range': (-8, -5),
-        'res_sigma_range': (0.0001, 0.005),
-        'q_shift_sigma': 0.002
-    }
-}
+    # Training / Model
+    batch_size: int = 32
+    lr: float = 2e-4
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    epochs: int = 100 # For main loop reference
 
-# Pre-compute Q_GRID
-CONFIG['q_grid'] = torch.linspace(CONFIG['q_min'], CONFIG['q_max'], CONFIG['q_len'])
+    # Model Architecture
+    model_type: Literal['pinn', 'fourier'] = 'fourier'
+    n_layers: int = 1
+    fourier_scale: float = 10.0
+    hidden_dim: int = 256
+
+    # Runtime Computed Properties (ignored by Pydantic serialization usually, or use property)
+    @property
+    def q_grid(self) -> torch.Tensor:
+        q_min = tth2q(self.q_min_tth, self.instrument.wavelength)
+        q_max = tth2q(self.q_max_tth, self.instrument.wavelength)
+        return torch.linspace(q_min, q_max, self.q_len)
+
+    @property
+    def q_min(self) -> float:
+        return tth2q(self.q_min_tth, self.instrument.wavelength)
+
+    @property
+    def q_max(self) -> float:
+        return tth2q(self.q_max_tth, self.instrument.wavelength)
+
+# Global Default Instance (for backward compatibility / smooth refactor)
+CONFIG = XRefineConfig(experiment_name="test_pydantic")

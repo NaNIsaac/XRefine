@@ -20,9 +20,10 @@ class XRRAugmentations:
         q_shift_sigma: float = 0.002,
         delta_q: float = 0.0005,
         prob: float = 0.95,
-        beam_width_range: tuple = (0.005, 0.015),
+        beam_width_range: tuple = (0.05, 0.2), # Adjusted to realistic mm range (similar to config 0.1)
         sample_len_range: tuple = (5, 30.0),
-        do_footprint: bool = True
+        do_footprint: bool = True,
+        beam_profile: str = 'gaussian' # 'gaussian' or 'square'
     ):
         self.intensity_noise_scale = intensity_noise_scale
         self.bg_range = bg_range
@@ -35,13 +36,19 @@ class XRRAugmentations:
         self.beam_width_range = beam_width_range
         self.sample_len_range = sample_len_range
         self.do_footprint = do_footprint
+        self.beam_profile = beam_profile
 
     def _gauss_footprint(self, theta_deg: np.ndarray, beam_w: float, sample_len: float) -> np.ndarray:
         """
         GenX's GaussIntensity logic implemented for NumPy.
+        beam_w is assumed to be FWHM.
         """
         rad = np.pi / 180.0
         sqrt2 = np.sqrt(2.0)
+        
+        # Convert FWHM to Sigma
+        # FWHM = 2 * sqrt(2 * ln(2)) * sigma ≈ 2.3548 * sigma
+        sigma_x = beam_w / (2 * np.sqrt(2 * np.log(2)))
 
         # 빔과 시료가 이루는 투영 각도 계산
         sinalpha = np.sin(theta_deg * rad)
@@ -52,13 +59,26 @@ class XRRAugmentations:
         s_half = sample_len / 2.0
 
         # Gaussian Beam Spill-over Calculation
-        common = sinalpha / (sqrt2 * beam_w)
+        common = sinalpha / (sqrt2 * sigma_x)
 
         # erf is odd function: erf(s * common) + erf(s * common) = 2 * erf(...)
         # result = (2 * erf(...)) / 2.0 = erf(...)
         correction = erf(s_half * common)
 
         return correction
+
+    def _square_footprint(self, theta_deg: np.ndarray, beam_w: float, sample_len: float) -> np.ndarray:
+        """
+        GenX's SquareIntensity logic.
+        """
+        rad = np.pi / 180.0
+        sinalpha = np.sin(theta_deg * rad)
+        
+        # F = slen / beamwidth * sin(alpha)
+        # GenX uses 'beamwidth' directly for Square profile
+        F = (sample_len / beam_w) * sinalpha
+        
+        return np.where(F <= 1.0, F, np.ones_like(F))
 
     def apply_footprint(self, q: np.ndarray, R: np.ndarray) -> np.ndarray:
         """Randomly apply beam width and sample length for low-angle intensity attenuation simulation."""
@@ -70,7 +90,10 @@ class XRRAugmentations:
         sin_theta = np.clip(sin_theta, 0, 1)
         theta_deg = np.degrees(np.arcsin(sin_theta))
 
-        foocor = self._gauss_footprint(theta_deg, beam_w, sample_len)
+        if self.beam_profile == 'square':
+            foocor = self._square_footprint(theta_deg, beam_w, sample_len)
+        else:
+            foocor = self._gauss_footprint(theta_deg, beam_w, sample_len)
 
         return R * foocor
 

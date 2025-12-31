@@ -8,9 +8,17 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from xrefine.models.model import XRR_PINN
+from xrefine.models import XRR_PINN, XRR_Fourier_PINN
 from xrefine.data.generator import generate_synthetic_batch
-from xrefine.config import CONFIG
+from xrefine.data.augmentations import XRRAugmentations
+from xrefine.config import XRefineConfig
+
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 # -----------------------------------------------------------------------------
 # 1. Advanced Metrics
@@ -249,122 +257,145 @@ def save_advanced_reconstruction(
 # 4. Main Evaluation Function
 # -----------------------------------------------------------------------------
 def evaluate(args):
-    device = CONFIG['device']
+    # Load Checkpoint
     checkpoint_path = Path(args.checkpoint)
     
     if not checkpoint_path.exists():
         print(f"❌ Checkpoint not found: {checkpoint_path}")
         return
 
-    # Create Save Directory (same as checkpoint or specified)
-    # The user asked for "saved in experiment folder" which contains the checkpoint
     exp_dir = checkpoint_path.parent
-    
     print(f"🔍 Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    config = checkpoint.get('config', None)
-    if not config:
-        print("⚠️ No config found in checkpoint, using default Config")
-        config = CONFIG
+    # Load CPU first to avoid memory issues if GPU is busy
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
-    # Initialize model
-    pinn = XRR_PINN(device=device).to(device)
+    # Extract Config
+    config_obj = checkpoint.get('config', None)
+    if not config_obj:
+        print("⚠️ No config found in checkpoint. Cannot proceed reliably.")
+        return
+        
+    # Ensure it's XRefineConfig (it should be if saved correctly, or dict)
+    if isinstance(config_obj, dict):
+        config = XRefineConfig(**config_obj)
+    else:
+        config = config_obj
+        
+    device = config.device
+    
+    # Initialize Model
+    print(f"🧠 Initializing Model: {config.model_type} ({config.n_layers} layers)")
+    if config.model_type == 'fourier':
+        pinn = XRR_Fourier_PINN(config=config, device=device).to(device)
+    else:
+        pinn = XRR_PINN(config=config, device=device).to(device)
+        
     pinn.load_state_dict(checkpoint['model_state_dict'])
     pinn.eval()
+    
+    # Setup Augmenter
+    # Use config params
+    q_grid = config.q_grid.to(device)
+    if q_grid.ndim > 0:
+        delta_q = (q_grid[1] - q_grid[0]).item()
+    else:
+        delta_q = 0.0005
+        
+    aug_cfg = config.augmentations
+    augmenter = XRRAugmentations(
+        delta_q=delta_q,
+        intensity_noise_scale=aug_cfg.intensity_noise_scale,
+        bg_range=aug_cfg.bg_range,
+        res_sigma_range=aug_cfg.res_sigma_range,
+        q_shift_sigma=aug_cfg.q_shift_sigma,
+        beam_profile=aug_cfg.beam_profile,
+        do_footprint=True 
+    )
     
     # Large Batch Generation
     BATCH_SIZE = args.batch_size
     print(f"🧪 Generating {BATCH_SIZE} synthetic samples for evaluation...")
     
-    q_grid = config['q_grid'].to(device)
-    qs_np = q_grid.cpu().numpy()
-    
     # Generate data
-    # generate_synthetic_batch returns (reflectivity, (thick, rough, sld))
-    # params tuple has [Batch, Layers] shape
-    r_measured_cuda, params_tuple_cuda = generate_synthetic_batch(BATCH_SIZE, q_grid, config)
+    r_measured_cuda, params_tuple_cuda = generate_synthetic_batch(
+        BATCH_SIZE, q_grid, config=config, augmenter=augmenter
+    )
     
     # Run Inference
     print("🧠 Running Inference...")
     with torch.no_grad():
-        # returns (thick, rough, sld), r_reconstructed
         params_pred_tuple, r_reconstructed_cuda = pinn(torch.log10(r_measured_cuda + 1e-12))
 
-    # Move to CPU for analysis
+    # Move to CPU
     r_measured = r_measured_cuda.cpu().numpy()
     r_reconstructed = r_reconstructed_cuda.cpu().numpy()
     
-    # Unpack parameters
-    # Tuple: (thickness, roughness, sld)
-    # Thickness: [B, n_layers]
-    # Roughness: [B, n_layers+1] ? Note: model.py output matches input structure?
-    # generate_synthetic_batch returns roughness as [B, n_layers+1] ?
-    # Let's check model.py:
-    # Model returns: return (thick, rough, sld), r_final
-    # XRRParameterEncoder returns: thick, rough, sld, s_len, i0_scale
-    # Wait, model forward returns (thick, rough, sld) matching encoder output
-    # Encoder output thick is [B, 1], rough is [B, 1], sld is [B, 1] (for n_layers=1)
-    # Generator output (for n_layers=1):
-    # thick: [B, 1], rough: [B, 2], sld: [B, 3] (Amb, L1, Sub)
-    # WE HAVE A MISMATCH potentially if model predicts simplified parameters vs generator full parameters
+    # Unpack Truth
+    # Generator returns (thick [B,N], rough [B,N+1], sld [B,3])
+    # For N=1: 
+    # Thick: [B, 1]
+    # Rough: [B, 2] (Amb/L1, L1/Sub)
+    # SLD: [B, 3] (Amb, L1, Sub)
     
-    # Let's check model.py detail:
-    # class XRRParameterEncoder(nn.Module):
-    #   ...
-    #   return thick, rough, sld, s_len, i0_scale
-    #   thick, rough, sld are [B, 1]
+    t_true = params_tuple_cuda[0].cpu().numpy()
+    r_true = params_tuple_cuda[1].cpu().numpy()
+    s_true = params_tuple_cuda[2].cpu().numpy()
     
-    # class XRR_PINN_V3(nn.Module):
-    #   def forward(self, r_obs):
-    #       thick, rough, sld, s_len, i0 = self.encoder(r_obs)
-    #       ...
-    #       rough_full = torch.cat([rough, rough], dim=-1) # Duplicating roughness for 2 interfaces?
-    #       sld_full = torch.cat([torch.zeros_like(sld), sld, torch.ones_like(sld)*20.1], dim=-1)
-    #       return (thick, rough, sld), r_final
+    # Unpack Preds
+    # Model returns (thick [B,N], rough [B,?], sld [B,?])
+    # FourierModel: 
+    # Thick: [B, N]
+    # Rough: [B, N+1] ! Fixed in decoupling
+    # SLD: [B, N] ! Fixed in decoupling? 
+    # Wait, FourierModel sld output is size N? No, let's check fourier_model.py
+    # sld = out[...] size N. 
+    # returned (thick, rough_full, sld_full) ? 
+    # r_final = ...
+    # return (thick, rough_full, sld_full), r_final
+    # rough_full: size N+1
+    # sld_full: size N+2
     
-    # So the model predicts SINGLE layer properties (1 thick, 1 rough, 1 sld).
-    # And constructs full stack assuming Amb=0, Sub=20.1 fixed?
+    t_pred = params_pred_tuple[0].cpu().numpy()
+    r_pred = params_pred_tuple[1].cpu().numpy()
+    s_pred = params_pred_tuple[2].cpu().numpy()
     
-    # Generator returns:
-    # thickness [B, 1]
-    # roughness [B, 2] (Two interfaces)
-    # sld [B, 3] (Amb, Layer, Sub)
+    # Comparison Strategy
+    # Thickness: Direct
+    # Roughness: Direct (both N+1)
+    # SLD: Direct (both N+2) -- Wait, did Model predict full SLD? 
+    # Model predicted 'sld' (size N), constructed 'sld_full' (size N+2) with fixed Amb/Sub.
+    # So we compare full profiles? Or just the variable parts?
+    # Evaluation should ideally evaluate what the model *predicted*.
+    # But evaluating the full physics profile (SLD vector) is also good.
+    # Let's verify dimensions match.
     
-    # Comparison:
-    # Thickness: Direct compare.
-    # Roughness: Model predicts 1 value 'rough'. Generator has 2.
-    #            If model uses `rough` for both interfaces (rough_full = cat([rough, rough])),
-    #            we should compare model 'rough' to... average of true roughness? or first?
-    # SLD: Model predicts 1 value 'sld'. Generator has 3 (Middle one is layer sld).
-    #            We should compare model 'sld' to true 'layer sld'.
+    # Taking mean or specific layer for summary table
+    # Let's take Layer 1 Thickness, Layer 1 Roughness, Layer 1 SLD
     
-    t_true = params_tuple_cuda[0].cpu().numpy()[:, 0]
-    # Generator provides full roughness [Amb/L1, L1/Sub]
-    # We'll stick to first interface or average?
-    # Let's use index 0 for comparison if that's what model learned or intended
-    # But generator randomizes both. Model is forced to use same for both?
-    # "rough_full = torch.cat([rough, rough], dim=-1)" -> Yes model assumes uniform roughness.
-    # So we compare prediction to mean of true roughnesses?
-    r_true = params_tuple_cuda[1].cpu().numpy().mean(axis=1) 
+    t_true_l1 = t_true[:, 0]
+    t_pred_l1 = t_pred[:, 0]
     
-    s_true = params_tuple_cuda[2].cpu().numpy()[:, 1] # Index 1 is layer SLD
+    # Roughness: Layer 1 is usually index 0 (Amb->L1) or index 1 (L1->Sub)?
+    # Generator logic: index 0 is top (Amb/L1), index -1 is bottom (Ln/Sub)
+    # Let's look at index 0 (Top Roughness) and index -1 (Substrate Roughness)
+    r_true_l1 = r_true[:, 0] 
+    r_pred_l1 = r_pred[:, 0]
     
-    t_pred = params_pred_tuple[0].cpu().numpy()[:, 0]
-    r_pred = params_pred_tuple[1].cpu().numpy()[:, 0]
-    s_pred = params_pred_tuple[2].cpu().numpy()[:, 0]
+    # SLD: Index 1 is Layer 1 (Index 0 is Amb=0, Index -1 is Sub)
+    s_true_l1 = s_true[:, 1]
+    s_pred_l1 = s_pred[:, 1]
     
-    # Stack for metrics [B, 3]
-    targets = np.stack([t_true, r_true, s_true], axis=1)
-    preds = np.stack([t_pred, r_pred, s_pred], axis=1)
+    targets = np.stack([t_true_l1, r_true_l1, s_true_l1], axis=1)
+    preds = np.stack([t_pred_l1, r_pred_l1, s_pred_l1], axis=1)
     
-    # Metrics
-    metrics = calculate_metrics(preds, targets)
     param_names = ["Thickness (A)", "Roughness (A)", "SLD (10-6 A-2)"]
     
+    # Calculate Metrics
+    metrics = calculate_metrics(preds, targets)
     print_metrics_table(metrics, param_names)
 
-    # DataFrame creation
+    # DataFrame creation for full report
     df = pd.DataFrame()
     for i, name in enumerate(param_names):
         clean = name.split(' (')[0]
@@ -383,14 +414,13 @@ def evaluate(args):
     plot_error_heatmap(df, save_path=exp_dir / "error_heatmap.png")
     
     save_advanced_reconstruction(
-        preds, targets, qs_np,
+        preds, targets, config.q_grid.cpu().numpy(),
         r_measured, r_reconstructed,
         exp_dir / "reconstruction_analysis.png",
         worst_indices=worst_indices
     )
     
     print(f"✅ Evaluation Complete. Reports saved in: {exp_dir}")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate XRR PINN")
