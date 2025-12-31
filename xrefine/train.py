@@ -17,11 +17,22 @@ def train_streaming(config: XRefineConfig, steps: int = None):
     model = XRR_Fourier_PINN(config=config, device=device).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=1e-4)
     total_steps = steps if steps is not None else config.train_steps
+    actual_warmup = min(config.warmup_steps, int(total_steps * 0.5))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
 
     # 2. 증강기 초기화
     q_grid = config.q_grid.to(device)
-    base_augmenter = XRRAugmentations(delta_q=0.0005, do_footprint=True)
+    delta_q = (q_grid[1] - q_grid[0]).item()
+    aug_cfg = config.augmentations
+    base_augmenter = XRRAugmentations(
+        delta_q=delta_q,
+        intensity_noise_scale=aug_cfg.intensity_noise_scale,
+        bg_range=aug_cfg.bg_range,
+        res_sigma_range=aug_cfg.res_sigma_range,
+        q_shift_sigma=aug_cfg.q_shift_sigma,
+        beam_profile=aug_cfg.beam_profile,
+        do_footprint=True
+    )
 
     # [핵심 해결] 가변 인자 어댑터: 시뮬레이터(4~5개)와 증강기(2개) 호출을 모두 대응
     def universal_adapter(*args, **kwargs):
@@ -51,7 +62,7 @@ def train_streaming(config: XRefineConfig, steps: int = None):
     for step in pbar:
         # [A] Curriculum Weight 계산 (Linear Decay)
         # 초반엔 Label 학습(sup_w_start)에 집중하여 뼈대를 잡습니다.
-        ratio = min(step / config.warmup_steps, 1.0)
+        ratio = min(step / actual_warmup, 1.0)
         curr_sup_w = config.sup_w_start * (1 - ratio) + config.sup_w_end * ratio
 
         # [B] 데이터 실시간 생성
@@ -68,6 +79,9 @@ def train_streaming(config: XRefineConfig, steps: int = None):
         total_loss, l_rec, l_par, l_L = compute_xrefine_loss(
             params_pred, r_recon, target_log_r, params_true, config, curr_sup_w
         )
+
+        if step == actual_warmup:
+            print(f"\n🎓 Phase Shift: Supervised -> Physics-Informed (Step {step})")
 
         # [D] Backward & Clipping
         total_loss.backward()

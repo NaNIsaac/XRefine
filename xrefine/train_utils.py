@@ -98,25 +98,36 @@ def save_pinn_report(q_grid, r_target, r_recon, loss_history, params_pred, param
 def plot_learning_curves(history, save_path):
     """
     Train/Val Loss 수렴 과정을 시각화
-    - history: {'train': [...], 'val': [...]}
+    로그 주기가 달라도(예: Train은 1step, Val은 100step) 자동으로 x축을 맞춰서 그림
     """
-    plt.figure(figsize=(10, 6))
     train_loss = history.get('train', [])
     val_loss = history.get('val', [])
     
-    epochs = range(1, len(train_loss) + 1)
+    if not train_loss:
+        print("⚠️ No train loss to plot.")
+        return
+
+    plt.figure(figsize=(10, 6))
     
-    plt.plot(epochs, train_loss, 'b-', label='Train Loss', alpha=0.7)
+    # 1. Train Loss용 X축 (매 스텝)
+    steps_train = np.arange(len(train_loss))
+    plt.plot(steps_train, train_loss, 'b-', label='Train Loss', alpha=0.5, lw=1)
+    
+    # 2. Val Loss용 X축 (인터벌 계산)
     if val_loss:
-        plt.plot(epochs, val_loss, 'r-', label='Val Loss', alpha=0.7)
+        # Train 데이터 개수와 Val 데이터 개수의 비율로 x축 위치를 보간(Interpolation)
+        # 예: Train 5000개, Val 50개면 x축은 0, 100, 200 ... 순서가 됨
+        steps_val = np.linspace(0, len(train_loss) - 1, len(val_loss))
+        plt.plot(steps_val, val_loss, 'r-o', label='Val Loss', markersize=4, alpha=0.8)
         
-    plt.yscale('log') # XRR 특성상 Log scale 필수
-    plt.title("Model Convergence (PINN Learning Dynamics)", fontsize=14)
-    plt.xlabel("Epochs / Steps")
+    plt.yscale('log') # XRR 손실값은 로그 스케일 필수
+    plt.title("XRefine Learning Dynamics", fontsize=14)
+    plt.xlabel("Training Steps")
     plt.ylabel("Total Loss (Log Scale)")
     plt.legend()
     plt.grid(True, which='both', alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(save_path)
+    plt.savefig(save_path, dpi=120)
     plt.close()
+    print(f"📈 Convergence plot saved to: {save_path}")

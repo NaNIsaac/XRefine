@@ -21,21 +21,21 @@ class InstrumentConfig(BaseModel):
 class AugmentationConfig(BaseModel):
     """학습 데이터 생성 시 적용할 변동성(Noise) 설정"""
     intensity_noise_scale: float = 0.2
-    bg_range: Tuple[float, float] = (-8.0, -5.0)      # log10(Ibkg) 범위
+    bg_range: Tuple[float, float] = (-8.0, -5.0)
     res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
-    q_shift_sigma: float = 0.001                      # 정렬 오차 (너무 크면 학습 방해)
+    q_shift_sigma: float = 0.001
     beam_profile: Literal['gaussian', 'square'] = 'gaussian'
 
 class XRefineConfig(BaseModel):
     """전체 프로젝트 통합 설정 클래스"""
     
     # --- 실험 및 저장 경로 ---
-    experiment_name: str = 'PINN_Full_V3'
+    experiment_name: str = 'test5'
     save_root: str = r'D:\03_Resources\Data\XRR_AI\PINN'
 
     # --- 물리적 측정 범위 (q-grid) ---
     q_min_tth: float = 0.05
-    q_max_tth: float = 12.0      # 고각 노이즈가 심하면 10~12 정도로 조절
+    q_max_tth: float = 12.0
     q_len: int = 2000
 
     # --- [Film] 메인 타겟 박막 범위 ---
@@ -59,22 +59,22 @@ class XRefineConfig(BaseModel):
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
 
     # --- 학습 파라미터 (Curriculum Learning) ---
-    batch_size: int = 32
+    batch_size: int = 50
     lr: float = 1e-4             # Fourier 모델은 낮은 LR이 안정적
     train_steps: int = 10000
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 하이브리드 가중치 (Warmup)
-    sup_w_start: float = 100.0    # 초반에는 정답 파라미터 강제 주입
-    sup_w_end: float = 10.0       # 후반에는 물리 법칙에 자율성 부여
-    warmup_steps: int = 10000   # 안정적인 정착을 위해 3000으로 상향
+    sup_w_start: float = 1000.0
+    sup_w_end: float = 10.0
+    warmup_steps: int = 3000
     sld_weight_factor: float = 5.0 # 두께보다 SLD 정답을 5배 더 강하게 교육 (Trade-off 방지)
 
     # --- 모델 아키텍처 설정 ---
     model_type: Literal['pinn', 'fourier'] = 'fourier'
     n_layers: int = 1
-    fourier_scale: float = 25.0  # 고주파 진동 인식을 위해 15.0에서 상향
-    hidden_dim: int = 512        # 복잡한 물리 보정을 위해 256에서 상향
+    fourier_scale: float = 25.0
+    hidden_dim: int = 512
 
     # --- 런타임 계산 속성 (Serialization 무시) ---
     @property
@@ -94,5 +94,5 @@ class XRefineConfig(BaseModel):
             data = yaml.safe_load(f)
         return cls(**data)
 
-# 글로벌 기본 인스턴스 생성
+
 CONFIG = XRefineConfig()
