@@ -1,140 +1,135 @@
-import torch
-from tqdm import tqdm
 from pathlib import Path
-from xrefine.models import XRR_Fourier_PINN
-from xrefine.data.generator import generate_synthetic_batch
-from xrefine.data.augmentations import XRRAugmentations
-from xrefine.config import CONFIG, XRefineConfig
-from xrefine.train_utils import compute_xrefine_loss, save_pinn_report
+import torch
+from torch import optim
+from tqdm import tqdm
 
-def train_streaming(config: XRefineConfig, steps: int = None):
-    device = config.device
-    save_dir = Path(config.save_root) / config.experiment_name
-    save_dir.mkdir(parents=True, exist_ok=True)
-    config.save_yaml(save_dir / "config.yaml")
+from xrefine.data.generator import generate_synthetic_batch, get_xrr_dataloader
+from xrefine.config import XRefineConfig
+from xrefine.train_utils import compute_loss, QWeightedLogMSE
 
-    # 1. 모델 및 최적화
-    model = XRR_Fourier_PINN(config=config, device=device).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=1e-4)
-    total_steps = steps if steps is not None else config.train_steps
-    actual_warmup = min(config.warmup_steps, int(total_steps * 0.5))
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
-
-    # 2. 증강기 초기화
-    q_grid = config.q_grid.to(device)
-    delta_q = (q_grid[1] - q_grid[0]).item()
-    aug_cfg = config.augmentations
-    base_augmenter = XRRAugmentations(
-        delta_q=delta_q,
-        intensity_noise_scale=aug_cfg.intensity_noise_scale,
-        bg_range=aug_cfg.bg_range,
-        res_sigma_range=aug_cfg.res_sigma_range,
-        q_shift_sigma=aug_cfg.q_shift_sigma,
-        beam_profile=aug_cfg.beam_profile,
-        do_footprint=True
-    )
-
-    # [핵심 해결] 가변 인자 어댑터: 시뮬레이터(4~5개)와 증강기(2개) 호출을 모두 대응
-    def universal_adapter(*args, **kwargs):
-        """
-        generator.py의 두 가지 호출 방식에 모두 대응:
-        1. 시뮬레이터 모드: (q, t, r, s, dq=...) -> 4~5개 인자
-        2. 증강기 모드: (q, r) -> 2개 인자
-        """
-        # XRRAugmentations는 dq 인자를 직접 받지 않으므로 제거
-        kwargs.pop('dq', None)
-        return base_augmenter(*args, **kwargs)
-
-    # 3. 고정 Validation 세트 생성
-    print("🧪 Generating fixed validation batch...")
-    with torch.no_grad():
-        v_r, v_params = generate_synthetic_batch(
-            batch_size=config.batch_size, q_grid=q_grid, config=config, augmenter=universal_adapter
-        )
-        v_log_r = torch.log10(torch.clamp(v_r, min=1e-9)).detach()
-
-    loss_history = []
-    history = {'train': [], 'val': []}
-    best_val_loss = float('inf')
-    pbar = tqdm(range(total_steps), desc="🚀 PINN Training")
-
-    model.train()
-    for step in pbar:
-        # [A] Curriculum Weight 계산 (Linear Decay)
-        # 초반엔 Label 학습(sup_w_start)에 집중하여 뼈대를 잡습니다.
-        ratio = min(step / actual_warmup, 1.0)
-        curr_sup_w = config.sup_w_start * (1 - ratio) + config.sup_w_end * ratio
-
-        # [B] 데이터 실시간 생성
-        r_measured, params_true = generate_synthetic_batch(
-            batch_size=config.batch_size, q_grid=q_grid, config=config, augmenter=universal_adapter
-        )
-        target_log_r = torch.log10(torch.clamp(r_measured, min=1e-9))
-
-        # [C] Forward & Loss (curr_sup_w 실제 적용)
-        optimizer.zero_grad(set_to_none=True)
-        params_pred, r_recon = model(target_log_r)
+class XRefineTrainer:
+    def __init__(self, model, config: XRefineConfig, save_dir: Path | str, patience: int = 30):
+        self.cfg = config
+        self.device = torch.device(config.device)
+        self.model = model.to(self.device)
+        self.q_grid = config.q_grid.to(self.device)
         
-        # [사용자 피드백 반영] 6번째 인자로 curr_sup_w를 명시적으로 전달
-        total_loss, l_rec, l_par, l_L = compute_xrefine_loss(
-            params_pred, r_recon, target_log_r, params_true, config, curr_sup_w
+        # 1. Losses & Optimizer
+        self.criterion_recon = QWeightedLogMSE(self.q_grid, q_cut=0.5)
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=config.lr, weight_decay=1e-4)
+        self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
+        
+        # 2. Early Stopping
+        self.early_stop_patience = patience
+        self.patience_counter = 0
+        self.best_val_loss = float('inf')
+        
+        # 3. Data & Checkpointing
+        self.val_data = self._prepare_val_set()
+        self.checkpoint_dir = Path(save_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.history = {"train_loss": [], "val_loss": []}
+
+    def _prepare_val_set(self):
+        print("🧪 Generating fixed validation set for Early Stopping...")
+        with torch.no_grad():
+            r, p = generate_synthetic_batch(
+                batch_size=self.cfg.batch_size * 2, 
+                q_grid=self.q_grid, 
+                config=self.cfg
+            )
+            # v_log_r, v_params_true
+            return torch.log10(torch.clamp(r, min=1e-9)).detach(), p
+
+    def _get_curriculum_weight(self, epoch, max_epochs):
+        ratio = min(epoch / (max_epochs * 0.4), 1.0)
+        return self.cfg.sup_w_start * (1 - ratio) + self.cfg.sup_w_end * ratio
+
+    def train_step(self, target_log_r, params_true, curr_sup_w):
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+
+        with torch.amp.autocast('cuda', enabled=self.scaler is not None):
+            params_pred, r_recon, phys_penalty = self.model(target_log_r)
+            
+            # Unified loss from train_utils
+            total_loss, _, _, _ = compute_loss(
+                params_pred, r_recon, target_log_r, 
+                params_true, self.cfg, curr_sup_w, phys_penalty
+            )
+
+        if self.scaler:
+            self.scaler.scale(total_loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+            self.optimizer.step()
+
+        return total_loss.item()
+
+    @torch.no_grad()
+    def validate(self, curr_sup_w):
+        self.model.eval()
+        v_log_r, v_params_true = self.val_data
+        
+        params_pred, r_recon, phys_penalty = self.model(v_log_r)
+        
+        val_loss, _, _, _ = compute_loss(
+            params_pred, r_recon, v_log_r, 
+            v_params_true, self.cfg, curr_sup_w, phys_penalty
         )
+        return val_loss.item()
 
-        if step == actual_warmup:
-            print(f"\n🎓 Phase Shift: Supervised -> Physics-Informed (Step {step})")
+    def fit(self, max_epochs=200, steps_per_epoch=100):
+        # Parallel Data Loading (No Disk I/O, Pure CPU Simulation)
+        q_grid_cpu = self.cfg.q_grid.cpu()
+        train_loader = get_xrr_dataloader(self.cfg, q_grid_cpu, steps_per_epoch)
 
-        # [D] Backward & Clipping
-        total_loss.backward()
-        # NaN 방지를 위해 0.1로 타이트하게 클리핑
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
-        optimizer.step()
-        scheduler.step()
-
-        # [E] 모니터링
-        train_loss = total_loss.item()
-        loss_history.append(train_loss)
-        history['train'].append(train_loss)
-
-        if step % 100 == 0:
-            model.eval()
-            with torch.no_grad():
-                # Validation Loss 계산
-                v_params_pred, v_r_recon = model(v_log_r)
-                val_loss_total, _, _, _ = compute_xrefine_loss(
-                    v_params_pred, v_r_recon, v_log_r, v_params, config, curr_sup_w
-                )
-                history['val'].append(val_loss_total.item())
-                
-                # [사용자 피드백 반영] mae_s(SLD 오차) 모니터링 활성화
-                d_f, _, rho_f, _, _, L, _ = params_pred
-                t_t, _, s_t = params_true
-                mae_t = torch.mean(torch.abs(d_f - t_t[:, 0:1])).item()
-                mae_s = torch.mean(torch.abs(rho_f - s_t[:, 1:2])).item() 
+        print(f"🔥 Starting Training (Device: {self.device})")
+        pbar = tqdm(range(max_epochs), leave=False)
+        for epoch in pbar:
+            pbar.desc = f"E{epoch:03d}"
+            curr_w = self._get_curriculum_weight(epoch, max_epochs)
+            epoch_loss = 0
             
-            pbar.set_description(
-                f"W:{curr_sup_w:.0f} | T_L:{train_loss:.3f} | V_L:{val_loss_total.item():.3f} | d_err:{mae_t:.2f}Å | s_err:{mae_s:.2f}"
-            )
+            for r_meas, params_true in train_loader:
+                target_log_r = torch.log10(torch.clamp(r_meas, min=1e-9)).to(self.device)
+                params_true = [p.to(self.device) if torch.is_tensor(p) else p for p in params_true]
+                loss_val = self.train_step(target_log_r, params_true, curr_w)
+                epoch_loss += loss_val
+                pbar.set_postfix({'loss': f'{loss_val:.4f}'})
+
+            avg_train = epoch_loss / steps_per_epoch
+            val_loss = self.validate(curr_w)
             
-            # 리포트(이미지) 저장
-            save_pinn_report(
-                q_grid, r_measured[0:1], r_recon[0:1], loss_history, 
-                params_pred, params_true, save_dir / "convergence.png", step
-            )
-
-            # Best 체크포인트 저장
-            if val_loss_total.item() < best_val_loss:
-                best_val_loss = val_loss_total.item()
-                checkpoint = {
-                    'step': step,
-                    'model_state_dict': model.state_dict(),
-                    'history': history,
-                    'config': config.model_dump()
-                }
-                torch.save(checkpoint, save_dir / "best.pt")
+            self.history['train_loss'].append(avg_train)
+            self.history['val_loss'].append(val_loss)
             
-            model.train()
+            print(f"E{epoch:03d} | Train: {avg_train:.4f} | Val: {val_loss:.4f} | W_sup: {curr_w:.1f}")
 
-    print(f"✅ Training Complete. Best Val Loss: {best_val_loss:.6f}")
+            # Early Stopping Logic
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.patience_counter = 0
+                self._save_checkpoint("best_pinn.pt", epoch)
+            else:
+                self.patience_counter += 1
+                if self.patience_counter >= self.early_stop_patience:
+                    print(f"🛑 Early stopping at epoch {epoch}. Restoration of physics complete.")
+                    break
+            
+            self._save_checkpoint("latest.pt", epoch)
 
-if __name__ == "__main__":
-    train_streaming(CONFIG)
+    def _save_checkpoint(self, name, epoch):
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'val_loss': self.best_val_loss,
+            'history': self.history,
+            'config': self.cfg.model_dump()
+        }, self.checkpoint_dir / name)

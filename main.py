@@ -2,89 +2,94 @@ import argparse
 import sys
 from pathlib import Path
 
-# 프로젝트 내부 모듈 임포트
 from xrefine.config import CONFIG
-from xrefine.train import train_streaming
+from xrefine.train import XRefineTrainer
 from xrefine.evaluate import evaluate 
+from xrefine.models import XRR_Fourier_PINN
+
+def setup_training(args):
+    """훈련을 위한 모델, 시뮬레이터, 트레이너 조립"""
+    # 1. Config 병합 (Pydantic)
+    config = CONFIG.model_copy()
+    if args.name: config.experiment_name = args.name
+    if args.lr: config.lr = args.lr
+    if args.layers: config.n_layers = args.layers
+    if args.warmup: config.warmup_steps = args.warmup
+
+    save_dir = Path(config.save_root) / config.experiment_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    config.save_yaml(save_dir / "config.yaml")
+
+    print(f"🚀 [INIT] Starting XRefine PINN for '{config.experiment_name}'")
+    print(f"📦 [INFO] Layers: {config.n_layers} | Device: {config.device}")
+
+    # 2. PINN 모델 초기화 (내부에 Simulator 및 Mapper 포함)
+    model = XRR_Fourier_PINN(config=config, device=config.device)
+
+    # 3. 현대적 트레이너 초기화
+    trainer = XRefineTrainer(
+        model=model,
+        config=config,
+        save_dir=save_dir,
+        patience=30
+    )
+
+    return trainer, config
 
 def main():
     parser = argparse.ArgumentParser(
-        description="XRefine: AI-Powered X-ray Reflectivity Analysis Toolkit",
+        description="XRefine: Modern Physics-Informed AI for XRR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
     # --- Train Command ---
-    train_parser = subparsers.add_parser("train", help="Start PINN training with dynamic physics scaling")
-    train_parser.add_argument("--name", type=str, default=None, help="Experiment name override")
-    train_parser.add_argument("--steps", type=int, default=None, help="Total training steps")
-    train_parser.add_argument("--lr", type=float, default=None, help="Learning rate override")
-    train_parser.add_argument("--model", type=str, choices=['pinn', 'fourier'], default=None, help="Model architecture")
-    train_parser.add_argument("--layers", type=int, default=None, help="Number of film layers")
-    train_parser.add_argument("--warmup", type=int, default=None, help="Warmup steps for curriculum learning")
-    
+    train_parser = subparsers.add_parser("train", help="Start Modern PINN Training")
+    train_parser.add_argument("--name", type=str, help="Experiment name")
+    train_parser.add_argument("--epochs", type=int, default=200, help="Max epochs")
+    train_parser.add_argument("--steps_per_epoch", type=int, default=100, help="Steps per epoch")
+    train_parser.add_argument("--lr", type=float, help="Learning rate")
+    train_parser.add_argument("--layers", type=int, help="Number of film layers")
+    train_parser.add_argument("--warmup", type=int, help="Warmup steps")
+
     # --- Evaluate Command ---
-    eval_parser = subparsers.add_parser("eval", help="Evaluate model performance & generate reports")
-    eval_parser.add_argument("--checkpoint", type=str, default=None, help="Path to best.pt (auto-detects if None)")
-    eval_parser.add_argument("--batch_size", type=int, default=1000, help="Number of samples for evaluation")
-    
+    eval_parser = subparsers.add_parser("eval", help="Evaluate & Report")
+    eval_parser.add_argument("--checkpoint", type=str, help="Path to .pt file")
+    eval_parser.add_argument("--batch_size", type=int, default=1000)
+
     # --- Config Command ---
-    subparsers.add_parser("config", help="Print current system configuration")
+    subparsers.add_parser("config", help="Print system configuration")
 
     args = parser.parse_args()
-    
+
     if args.command == "train":
-        # 1. 베이스 설정 복사 (Pydantic의 이점을 살려 불변성 유지)
-        config = CONFIG.model_copy()
-        
-        # 2. CLI 인자로 설정 덮어쓰기
-        if args.name: config.experiment_name = args.name
-        if args.lr: config.lr = args.lr
-        if args.model: config.model_type = args.model
-        if args.layers: config.n_layers = args.layers
-        if args.warmup: config.warmup_steps = args.warmup
-        
-        print(f"🚀 [INIT] Starting Training for '{config.experiment_name}'")
-        print(f"📦 [INFO] Model: {config.model_type} | Layers: {config.n_layers} | Steps: {args.steps or config.train_steps}")
-        
+        trainer, config = setup_training(args)
         try:
-            train_streaming(config=config, steps=args.steps)
+            # 8-파라미터 및 q-weighted loss가 적용된 학습 시작
+            trainer.fit(max_epochs=args.epochs, steps_per_epoch=args.steps_per_epoch)
         except KeyboardInterrupt:
-            print("\n🛑 Training interrupted by user. Progress saved in 'latest.pt'.")
+            print("\n🛑 Training paused. Checkpoints are safe in the experiment directory.")
             sys.exit(0)
 
     elif args.command == "eval":
-        checkpoint_path = args.checkpoint
-        
-        # 3. 체크포인트 자동 탐지 로직 (강화됨)
-        if checkpoint_path is None:
-            # CONFIG에 설정된 저장 경로에서 가장 최신/베스트 모델 탐색
+        # 체크포인트 자동 탐색 로직 유지
+        if not args.checkpoint:
             base_dir = Path(CONFIG.save_root) / CONFIG.experiment_name
-            checkpoint_path = base_dir / "best.pt"
+            args.checkpoint = str(base_dir / "best.pt")
             
-            if not checkpoint_path.exists():
-                # best.pt가 없으면 latest.pt라도 시도
-                checkpoint_path = base_dir / "latest.pt"
-                
-            if not checkpoint_path.exists():
-                print(f"❌ [ERROR] Could not find checkpoint in {base_dir}")
-                print("   Please specify manually using: --checkpoint path/to/model.pt")
+            if not Path(args.checkpoint).exists():
+                print(f"❌ [ERROR] Checkpoint not found at {args.checkpoint}")
                 sys.exit(1)
-            
-            print(f"🔍 [AUTO] Detected checkpoint: {checkpoint_path}")
         
-        # evaluate 모듈에서 요구하는 형태로 인자 전달
-        args.checkpoint = str(checkpoint_path)
         evaluate(args)
-        
+
     elif args.command == "config":
         print("\n--- Current XRefine Configuration ---")
         print(CONFIG.model_dump_json(indent=4))
         print("--------------------------------------\n")
-        
+
     else:
         parser.print_help()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()

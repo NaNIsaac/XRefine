@@ -21,8 +21,8 @@ class InstrumentConfig(BaseModel):
 class AugmentationConfig(BaseModel):
     """학습 데이터 생성 시 적용할 변동성(Noise) 설정"""
     intensity_noise_scale: float = 0.2
-    bg_range: Tuple[float, float] = (-8.0, -5.0)
-    res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
+    bg_range: tuple[float, float] = (-8.0, -5.0)
+    res_sigma_range: tuple[float, float] = (0.0001, 0.005)
     q_shift_sigma: float = 0.001
     beam_profile: Literal['gaussian', 'square'] = 'gaussian'
 
@@ -39,19 +39,16 @@ class XRefineConfig(BaseModel):
     q_len: int = 2000
 
     # --- [Film] 메인 타겟 박막 범위 ---
-    thick_range: Tuple[float, float] = (10.0, 600.0)  # N=1 레이어 현실적 범위
-    rough_range: Tuple[float, float] = (0.5, 20.0)
-    sld_range: Tuple[float, float] = (5.0, 100.0)
+    thick_range: tuple[float, float] = (10.0, 600.0)  # N=1 레이어 현실적 범위
+    rough_range: tuple[float, float] = (0.5, 20.0)
+    sld_range: tuple[float, float] = (5.0, 100.0)
 
     # --- [SiO2] 하부 산화막 범위 (통일성을 위해 명시) ---
-    sio2_thick_range: Tuple[float, float] = (5.0, 50.0)
-    sio2_rough_range: Tuple[float, float] = (0.5, 10.0)
-    sio2_sld: float = 18.8      # 실리콘 산화막 표준 SLD (고정 권장)
+    sio2_thick_range: tuple[float, float] = (5.0, 50.0)
+    sio2_rough_range: tuple[float, float] = (0.5, 10.0)
+    sio2_sld_range: tuple[float, float] = (14, 20)      # 실리콘 산화막 표준 SLD (고정 권장)
 
-    # --- [Instrument] 기기적 구속 조건 ---
-    # Isaac 요청: 샘플 사이즈 10mm 내외로 강력 구속
-    sample_len_min: float = 9.0
-    sample_len_max: float = 11.0
+    sample_len_range: tuple[float, float] = (9.0, 11.0)  # mm
     substrate_sld: float = 20.1  # Si Substrate 고정
 
     # --- 서브 설정 객체 ---
@@ -60,7 +57,7 @@ class XRefineConfig(BaseModel):
 
     # --- 학습 파라미터 (Curriculum Learning) ---
     batch_size: int = 50
-    lr: float = 1e-4             # Fourier 모델은 낮은 LR이 안정적
+    lr: float = 2e-4             # Fourier 모델은 낮은 LR이 안정적
     train_steps: int = 10000
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -73,7 +70,7 @@ class XRefineConfig(BaseModel):
     # --- 모델 아키텍처 설정 ---
     model_type: Literal['pinn', 'fourier'] = 'fourier'
     n_layers: int = 1
-    fourier_scale: float = 25.0
+    fourier_scale: float = 30.0
     hidden_dim: int = 512
 
     # --- 런타임 계산 속성 (Serialization 무시) ---

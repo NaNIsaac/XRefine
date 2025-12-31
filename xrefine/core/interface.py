@@ -50,7 +50,10 @@ class Simulator(nn.Module):
         
         if self.method == 'abeles':
             if dq is not None:
-                dq = dq.to(self.device)
+                if not torch.is_tensor(dq):
+                    dq = torch.tensor([[dq]], device=self.device, dtype=q.dtype)
+                else:
+                    dq = dq.to(self.device)
                 return abeles_constant_smearing(q, thickness, roughness, sld, dq=dq, **kwargs)
             else:
                 return abeles(q, thickness, roughness, sld)

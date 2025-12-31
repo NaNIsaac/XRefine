@@ -8,6 +8,7 @@ class DifferentiableFootprint(nn.Module):
         super().__init__()
         self.beam_w = beam_width
         self.wavelen = wavelength
+        self.register_buffer('sqrt_8ln2', torch.sqrt(torch.tensor(8.0 * np.log(2.0))))
 
     def forward(self, q, r_sim, sample_len):
         # 1. q -> theta (degrees) 변환

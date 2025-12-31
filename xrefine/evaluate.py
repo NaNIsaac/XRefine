@@ -6,7 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from xrefine.models import XRR_PINN, XRR_Fourier_PINN
+from xrefine.models import XRR_Fourier_PINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentations
 from xrefine.config import XRefineConfig
@@ -72,7 +72,8 @@ def save_advanced_reconstruction(qs, r_true, r_pred, target_params, pred_params,
         ax_top.set_title(f"Sample #{idx} | d_err: {pred_params[idx,0]-target_params[idx,0]:.2f}Å")
         ax_bot.plot(qs, np.log10(r_pred[idx]+1e-10) - np.log10(r_true[idx]+1e-10), color='blue', alpha=0.6)
         ax_bot.axhline(0, color='black', lw=1, linestyle='--'); ax_bot.set_ylim(-0.5, 0.5)
-    plt.savefig(save_path, dpi=150); plt.close()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
 
 # -----------------------------------------------------------------------------
 # 3. Main Evaluation Function
