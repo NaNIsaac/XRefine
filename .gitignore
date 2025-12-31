@@ -11,4 +11,5 @@ wheels/
 
 .codigest/
 experiments/
+debug/
 *.png

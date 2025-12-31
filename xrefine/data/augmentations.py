@@ -21,7 +21,7 @@ class XRRAugmentations:
         delta_q: float = 0.0005,
         prob: float = 0.95,
         beam_width_range: tuple = (0.05, 0.2), # Adjusted to realistic mm range (similar to config 0.1)
-        sample_len_range: tuple = (5, 30.0),
+        sample_len_range: tuple = (9, 11.0),
         do_footprint: bool = True,
         beam_profile: str = 'gaussian' # 'gaussian' or 'square'
     ):

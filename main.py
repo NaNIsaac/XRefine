@@ -1,9 +1,8 @@
 import argparse
 import sys
 from pathlib import Path
-import torch
 
-from xrefine.config import CONFIG, XRefineConfig
+from xrefine.config import CONFIG
 # Import functional components
 from xrefine.train import train_streaming
 from xrefine.evaluate import evaluate # To be implemented/refactored
@@ -15,14 +14,14 @@ def main():
     # --- Train Command ---
     train_parser = subparsers.add_parser("train", help="Start training a PINN model")
     train_parser.add_argument("--name", type=str, default=None, help="Experiment name override")
-    train_parser.add_argument("--steps", type=int, default=10000, help="Training steps")
+    train_parser.add_argument("--steps", type=int, default=None, help="Training steps override")
     train_parser.add_argument("--lr", type=float, default=None, help="Learning rate override")
     train_parser.add_argument("--model", type=str, choices=['pinn', 'fourier'], default=None, help="Model type override")
     train_parser.add_argument("--layers", type=int, default=None, help="Number of layers override")
     
     # --- Evaluate Command (Placeholder for now) ---
     eval_parser = subparsers.add_parser("eval", help="Evaluate a trained model")
-    eval_parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint.pt")
+    eval_parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint.pt (default: auto-detect best.pt)")
     eval_parser.add_argument("--batch_size", type=int, default=1000, help="Evaluation batch size")
     
     # --- Config Command ---
@@ -42,8 +41,24 @@ def main():
         
         print(f"🚀 Starting Training for '{config.experiment_name}'...")
         train_streaming(config=config, steps=args.steps)
-        
+
     elif args.command == "eval":
+        checkpoint = args.checkpoint
+        
+        # Auto-detect logic
+        if checkpoint is None:
+            base_dir = Path(CONFIG.save_root) / CONFIG.experiment_name
+            checkpoint = base_dir / "best.pt"
+            if not checkpoint.exists():
+                print(f"❌ Auto-detect failed: {checkpoint} not found.")
+                print("Please provide --checkpoint manually.")
+                sys.exit(1)
+            print(f"🔍 Auto-detected checkpoint: {checkpoint}")
+        
+        # Update args object implicitly or create new one?
+        # args is a Namespace. We can modify it.
+        args.checkpoint = str(checkpoint) # evaluate expects string path usually
+        
         evaluate(args)
         
     elif args.command == "config":

@@ -131,8 +131,8 @@ def abeles(
     # To avoid list overhead:
     m_accum = c_matrices[..., 0, :, :]
     for i in range(1, c_matrices.shape[-3]):
-         m_accum = torch.matmul(m_accum, c_matrices[..., i, :, :])
-         
+        m_accum = torch.matmul(m_accum, c_matrices[..., i, :, :])
+
     # Reflectivity calculation
     # r = M[1, 0] / M[0, 0]
     r = (m_accum[..., 1, 0] / m_accum[..., 0, 0]).abs() ** 2

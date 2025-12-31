@@ -3,7 +3,6 @@ from torch import Tensor
 import numpy as np
 
 from xrefine.core.interface import Simulator
-from xrefine.core.structures import Instrument
 
 # Type hint for Config object (forward reference or import if possible, lets use 'Any' or specific type if imported)
 # To avoid cycle imports, we can use Duck Typing or just 'object'

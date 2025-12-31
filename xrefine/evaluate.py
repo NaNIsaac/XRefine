@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 from pathlib import Path
 import argparse
 import numpy as np
@@ -14,11 +13,6 @@ from xrefine.data.augmentations import XRRAugmentations
 from xrefine.config import XRefineConfig
 
 
-import numpy as np
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 
 # -----------------------------------------------------------------------------
 # 1. Advanced Metrics
