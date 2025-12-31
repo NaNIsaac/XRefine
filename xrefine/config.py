@@ -29,7 +29,21 @@ CONFIG = {
     'batch_size': 32,
     'lr': 2e-4,
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'apply_footprint': True
+    'apply_footprint': True,
+    
+    # Model Settings
+    'model_type': 'fourier', # 'pinn' or 'fourier'
+    'n_layers': 1,
+    'fourier_scale': 10.0,
+    'hidden_dim': 256,
+    
+    # Augmentation Settings
+    'augmentations': {
+        'intensity_noise_scale': 0.2,
+        'bg_range': (-8, -5),
+        'res_sigma_range': (0.0001, 0.005),
+        'q_shift_sigma': 0.002
+    }
 }
 
 # Pre-compute Q_GRID

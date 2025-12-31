@@ -5,7 +5,7 @@ from pathlib import Path
 import argparse
 import datetime
 
-from xrefine.models.model import XRR_PINN
+from xrefine.models import XRR_PINN, XRR_Fourier_PINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.config import CONFIG
 
@@ -42,7 +42,13 @@ def train_streaming(args):
     # We will update generator.py to accept the dict directly or handle it there.
     # For now, let's keep it simple and pass CONFIG. generator.py will need to handle it.
     
-    pinn = XRR_PINN(device=device).to(device)
+    if CONFIG.get('model_type') == 'fourier':
+        print("🧠 Using Fourier Feature PINN Model")
+        pinn = XRR_Fourier_PINN(n_layers=CONFIG.get('n_layers', 1), device=device).to(device)
+    else:
+        print("🧠 Using Standard CNN PINN Model")
+        pinn = XRR_PINN(n_layers=CONFIG.get('n_layers', 1), device=device).to(device)
+        
     optimizer = torch.optim.AdamW(pinn.parameters(), lr=CONFIG['lr'])
 
     start_step = 0
