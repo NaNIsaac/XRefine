@@ -11,6 +11,7 @@ from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentations
 from xrefine.config import XRefineConfig
 from xrefine.train_utils import plot_learning_curves
+from xrefine.logger import logger
 
 # -----------------------------------------------------------------------------
 # 1. Advanced Metrics
@@ -31,13 +32,13 @@ def calculate_metrics(preds: np.ndarray, targets: np.ndarray) -> dict:
 
 def print_metrics_table(metrics: dict, param_names: list):
     header = f"{'Parameter':<22} | {'MAE':<10} | {'RMSE':<10} | {'MAPE (%)':<10} | {'R2':<10}"
-    print("\n" + "=" * len(header))
-    print(header)
-    print("-" * len(header))
+    logger.info("\n" + "=" * len(header))
+    logger.info(header)
+    logger.info("-" * len(header))
     for i, name in enumerate(param_names):
         if i < len(metrics['mae']):
-            print(f"{name:<22} | {metrics['mae'][i]:<10.4f} | {metrics['rmse'][i]:<10.4f} | {metrics['mape'][i]:<10.2f} | {metrics['r2'][i]:<10.4f}")
-    print("=" * len(header) + "\n")
+            logger.info(f"{name:<22} | {metrics['mae'][i]:<10.4f} | {metrics['rmse'][i]:<10.4f} | {metrics['mape'][i]:<10.2f} | {metrics['r2'][i]:<10.4f}")
+    logger.info("=" * len(header) + "\n")
 
 # -----------------------------------------------------------------------------
 # 2. Visualization & Reporting
@@ -71,7 +72,8 @@ def save_advanced_reconstruction(qs, r_true, r_pred, target_params, pred_params,
         ax_top.semilogy(qs, r_pred[idx], 'r-', lw=1.5, label='PINN')
         ax_top.set_title(f"Sample #{idx} | d_err: {pred_params[idx,0]-target_params[idx,0]:.2f}Å")
         ax_bot.plot(qs, np.log10(r_pred[idx]+1e-10) - np.log10(r_true[idx]+1e-10), color='blue', alpha=0.6)
-        ax_bot.axhline(0, color='black', lw=1, linestyle='--'); ax_bot.set_ylim(-0.5, 0.5)
+        ax_bot.axhline(0, color='black', lw=1, linestyle='--')
+        ax_bot.set_ylim(-0.5, 0.5)
     plt.savefig(save_path, dpi=150)
     plt.close()
 
@@ -81,9 +83,9 @@ def save_advanced_reconstruction(qs, r_true, r_pred, target_params, pred_params,
 def evaluate(args):
     checkpoint_path = Path(args.checkpoint)
     exp_dir = checkpoint_path.parent 
-    if not checkpoint_path.exists(): return print(f"❌ Checkpoint not found: {checkpoint_path}")
+    if not checkpoint_path.exists(): return logger.info(f"❌ Checkpoint not found: {checkpoint_path}")
 
-    print(f"🔍 Loading checkpoint from {checkpoint_path}...")
+    logger.info(f"🔍 Loading checkpoint from {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
     # 1. 수렴 곡선 출력
@@ -95,7 +97,7 @@ def evaluate(args):
     config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
     device = config.device
     
-    print(f"🧠 Initializing Model: {config.model_type}")
+    logger.info(f"🧠 Initializing Model: {config.model_type}")
     pinn = XRR_Fourier_PINN(config=config, device=device).to(device)
     pinn.load_state_dict(checkpoint['model_state_dict'])
     pinn.eval()
@@ -107,13 +109,13 @@ def evaluate(args):
         kwargs.pop('dq', None)
         return base_augmenter(*args, **kwargs)
 
-    print(f"🧪 Generating {args.batch_size} test samples...")
+    logger.info(f"🧪 Generating {args.batch_size} test samples...")
     r_measured, (t_true, r_true, s_true) = generate_synthetic_batch(
         args.batch_size, q_grid, config=config, augmenter=universal_adapter
     )
     
     # 4. Inference
-    print("🧠 Running Inference...")
+    logger.info("🧠 Running Inference...")
     with torch.no_grad():
         target_log_r = torch.log10(torch.clamp(r_measured, min=1e-9))
         params_pred, r_reconstructed = pinn(target_log_r)
@@ -155,7 +157,7 @@ def evaluate(args):
         q_grid.cpu().numpy(), r_measured.cpu().numpy(), r_reconstructed.cpu().numpy(),
         targets, preds, exp_dir / "eval_reconstruction.png"
     )
-    print(f"✅ Evaluation Complete. Reports in: {exp_dir}")
+    logger.info(f"✅ Evaluation Complete. Reports in: {exp_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

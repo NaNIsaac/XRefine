@@ -1,4 +1,5 @@
 from typing import Literal
+from pathlib import Path
 
 from pydantic import BaseModel, Field, ConfigDict
 import torch
@@ -35,8 +36,8 @@ class XRefineConfig(BaseModel):
     # --- 실험 및 저장 경로 ---
     experiment_name: str = 'test'
     # save_root: str = r'D:\03_Resources\Data\XRR_AI\PINN'
-    save_root: str = r'C:\Warehouse\data\XRR_AI\PINN'
-
+    save_root: Path = Path(r'C:\Warehouse\data\XRR_AI\PINN')
+    log_dir: Path = Path(r'logs')
     # --- 물리적 측정 범위 (q-grid) ---
     q_min_tth: float = 0.05
     q_max_tth: float = 12.0
@@ -99,12 +100,12 @@ class XRefineConfig(BaseModel):
         return torch.linspace(q_start, q_end, self.q_len)
 
     # --- YAML 저장 및 로드 기능 ---
-    def save_yaml(self, path: str):
+    def save_yaml(self, path: str | Path):
         with open(path, 'w') as f:
             yaml.dump(self.model_dump(), f, sort_keys=False)
 
     @classmethod
-    def load_yaml(cls, path: str) -> 'XRefineConfig':
+    def load_yaml(cls, path: str | Path) -> 'XRefineConfig':
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
         return cls(**data)

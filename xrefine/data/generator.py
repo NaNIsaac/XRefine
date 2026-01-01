@@ -19,7 +19,7 @@ def generate_synthetic_batch(
     config: Any, 
     simulator: Optional[Simulator] = None, 
     augmenter: Optional[XRRAugmentations] = None
-) -> Tuple[Tensor, ParamSet]:
+) -> Tuple[Tensor, ParamSet[Tensor]]:
     device = q_grid.device
     if simulator is None:
         simulator = Simulator(method='abeles', device=device)

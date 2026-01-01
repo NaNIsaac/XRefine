@@ -4,7 +4,7 @@ from xrefine.core.interface import Simulator
 from xrefine.data.generator import generate_synthetic_batch
 
 def test_structures():
-    print("Testing Structures...")
+    logger.info("Testing Structures...")
     instr = Instrument(wavelength=1.54, I0=1e8)
     assert instr.wavelength == 1.54
     
@@ -15,7 +15,7 @@ def test_structures():
     # Test to_tensor
     device = torch.device('cpu')
     t, r, sld = s.to_tensor(device)
-    print(f"to_tensor shape: T={t.shape}, R={r.shape}, SLD={sld.shape}")
+    logger.info(f"to_tensor shape: T={t.shape}, R={r.shape}, SLD={sld.shape}")
     
     assert t.shape == (1, 1)
     assert r.shape == (1, 2) # Amb/L1, L1/Sub
@@ -28,10 +28,10 @@ def test_structures():
     assert abs(s_new.layers[0].roughness - 3.0) < 1e-5
     assert abs(s_new.Substrate.roughness - 2.0) < 1e-5 # Default Si roughness
     
-    print("Structures OK")
+    logger.info("Structures OK")
 
 def test_simulator_with_sample():
-    print("Testing Simulator with Sample object...")
+    logger.info("Testing Simulator with Sample object...")
     sim = Simulator(device='cpu')
     
     l1 = Layer(thickness=100.0, roughness=3.0, sld=complex(20.0, 0.0))
@@ -45,10 +45,10 @@ def test_simulator_with_sample():
     r = sim.simulate_sample(q, s)
     
     assert r.shape == (1, 50)
-    print("simulate_sample OK")
+    logger.info("simulate_sample OK")
 
 def test_generator_with_instrument():
-    print("Testing generator with Instrument config...")
+    logger.info("Testing generator with Instrument config...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     q_grid = torch.linspace(0.01, 0.5, 100).to(device)
     
@@ -66,7 +66,7 @@ def test_generator_with_instrument():
     inputs, _ = generate_synthetic_batch(2, q_grid, config)
     assert inputs.shape == (2, 100)
     
-    print("Generator with Instrument OK")
+    logger.info("Generator with Instrument OK")
 
 if __name__ == "__main__":
     test_structures()
