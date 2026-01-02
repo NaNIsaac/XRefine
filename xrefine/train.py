@@ -146,7 +146,7 @@ class XRefineTrainer:
             # --- TensorBoard Epoch Logging ---
             self.writer.add_scalar("Epoch/Train_Loss", avg_train, epoch)
             self.writer.add_scalar("Epoch/Val_Loss", val_loss, epoch)
-            self.writer.add_scalar("Params/I0_mean", v_pred['I0'].mean().item(), epoch)
+            self.writer.add_scalar("Params/I0_mean", v_pred['i0'].mean().item(), epoch)
             self.writer.add_scalar("Params/L_mean", v_pred['L'].mean().item(), epoch)
             self.writer.add_scalar("Curriculum/Weight", curr_w, epoch)
 

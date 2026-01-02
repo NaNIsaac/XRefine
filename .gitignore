@@ -13,3 +13,4 @@ wheels/
 experiments/
 debug/
 *.png
+logs/

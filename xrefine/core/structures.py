@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Any, List, TypedDict
+from io import StringIO
+
 import torch
 from torch import Tensor
 import numpy as np
@@ -150,9 +152,9 @@ class FitTarget:
     spec: FitParam
 
 
-class ParamSet[T: (torch.Tensor, float)](TypedDict):
+class ParamSet[T: (Tensor, float)](TypedDict):
     """
-    XRR 분석에 필요한 모든 가변 변수 세트 (Batch Tensor 형태)
+    XRR 분석에 필요한 모든 가변 변수 세트
     """
     # 1. Main Film
     d_f: T    # (B, N)
@@ -169,3 +171,24 @@ class ParamSet[T: (torch.Tensor, float)](TypedDict):
     i0: T     # (B, 1) - Intensity Scale
     bkg: T    # (B, 1) - Background Log level
     beam_width: T  # (B, 1) - Beam Width
+
+
+def format_params(params: ParamSet, title: str = "Parameters") -> str:
+    """
+    match-case를 사용하여 ParamSet을 이쁜 문자열로 변환합니다.
+    """
+    output = StringIO()
+    output.write(f"[{title}]\n")
+    
+    for k, v in params.items():
+        match v:
+            case torch.Tensor() if v.numel() == 1:
+                output.write(f"  {k:12}: {v.item():.4f}\n")
+            case torch.Tensor():
+                output.write(f"  {k:12}: {v.detach().cpu().numpy().flatten()[:5]:.4f} (batch)\n")
+            case float():
+                output.write(f"  {k:12}: {v:.4f}\n")
+            case _:
+                output.write(f"  {k:12}: {str(v)}\n")
+                
+    return output.getvalue()

@@ -17,6 +17,7 @@ dependencies = [
     "lib-platform",
     "loguru>=0.7.3",
     "tensorboard>=2.20.0",
+    "typer>=0.21.0",
 ]
 
 [[tool.uv.index]]
