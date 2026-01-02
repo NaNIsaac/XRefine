@@ -92,7 +92,7 @@ def save_pinn_report(
     recent_loss = loss_history[-500:] # 최근 500스텝만 시각화
     ax0.plot(recent_loss, color='#2c3e50', lw=1.5)
     ax0.set_yscale('log')
-    ax0.set_title(f"Convergence (Recent Steps)")
+    ax0.set_title("Convergence (Recent Steps)")
     ax0.set_xlabel("Steps")
     ax0.grid(True, alpha=0.2)
 
@@ -103,8 +103,8 @@ def save_pinn_report(
     y_target = target_log_r[0].detach().cpu().numpy()
     y_recon = torch.log10(torch.clamp(r_recon[0], min=1e-11)).detach().cpu().numpy()
 
-    ax1.plot(q_np, y_target, 'ko', markersize=2, alpha=0.15, label='Measured (Log)')
     ax1.plot(q_np, y_recon, 'r-', lw=2, label='PINN Physics Fit (Log)')
+    ax1.plot(q_np, y_target, 'ko', markersize=2, alpha=0.15, label='Measured (Log)')
     ax1.set_ylabel("Log10(Reflectivity)")
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
@@ -125,7 +125,7 @@ def save_pinn_report(
     info_text = f"Step: {step}\n\n{pred_str}\n{true_str}"
     
     plt.gcf().text(0.02, 0.02, info_text, fontsize=9, family='monospace', 
-                   bbox=dict(facecolor='white', alpha=0.8, edgecolor='#34495e'))
+        bbox=dict(facecolor='white', alpha=0.8, edgecolor='#34495e'))
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)

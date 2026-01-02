@@ -63,14 +63,14 @@ class XRefineConfig(BaseModel):
 
     # --- 학습 파라미터 (Curriculum Learning) ---
     batch_size: int = 50
-    lr: float = 2e-4
+    lr: float = 5e-4
     train_steps: int = 10000
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 하이브리드 가중치 (Warmup)
     sup_w_start: float = 1000.0
-    sup_w_end: float = 100.0
-    warmup_steps: int = 3000
+    sup_w_end: float = 5000
+    warmup_steps: int = 5000
     sld_weight_factor: float = 3.0
     phys_penalty_w: float = 3
     supervise_weight_params: ParamSet = {
@@ -86,7 +86,6 @@ class XRefineConfig(BaseModel):
         "beam_width": 20.0
     }
     # --- 모델 아키텍처 설정 ---
-    model_type: Literal['pinn', 'fourier'] = 'fourier'
     n_layers: int = 1
     fourier_scale: float = 40.0
     hidden_dim: int = 512

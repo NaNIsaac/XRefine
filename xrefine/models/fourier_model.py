@@ -79,17 +79,20 @@ class XRRPhysicsModel(nn.Module):
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(1)
-        x = torch.clamp((x + 10.0) / 10.0, 0.0, 1.0)
-
+        
+        # [수정] 단순히 10으로 나누는 대신, 유효 범위(-8 ~ 0)를 0~1로 매핑하고 
+        # 안정적인 학습을 위해 스케일링 강화
+        x = torch.clamp(x, min=-9.0, max=0.0)
+        x = (x + 9.0) / 9.0  # -9 -> 0, 0 -> 1
+        
         if self.use_fourier:
             q_feat = self.fourier(self.q_grid_norm.expand(x.shape[0], -1, -1))
             x = torch.cat([x, q_feat], dim=1)
-        
 
         feat = self.encoder(x)
         feat = self.global_pool(feat).view(feat.size(0), -1)
-
         raw_out = self.regressor(feat)
+        
         return torch.sigmoid(raw_out)
 
 class XRR_Fourier_PINN(nn.Module):
