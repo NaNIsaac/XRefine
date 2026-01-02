@@ -17,22 +17,7 @@ def make_genx_layer(d, sig, sld):
     return Layer(d=d, f=get_f(sld), dens=1.0, sigma=sig)
 
 def run_genx_sim(qs, film_d, film_r, film_sld):
-    # Defining Layers
-    # Structure: Substrate (Si) -> Film -> Surface (SiO2) -> Ambient (Air)
-    
-    # 1. Substrate: Si (SLD ~20.1)
-    # GenX Substrate is infinite? 
-    # Usually GenX stack is bottom-up? Or top-down?
-    # GenX docs: Stacks order is usually Top -> Bottom (Beam hits item 0 first?)
-    # Wait, in the user snippet:
-    # layers = [sio2.to_layer()] + [film.to_layer()]
-    # stack = Stack(Layers=layers)
-    # sample = Sample(Stacks=[stack], Ambient=AIR, Substrate=sub)
-    # So Order in Stack: Top (Surface) -> Bottom (Film)
-    # Sample has Ambient (above stack) and Substrate (below stack).
-    
-    # Let's rebuild that structure.
-    
+
     # Ambient: Air (SLD=0)
     amb = Layer(d=0, f=complex(0,0), dens=1.0, sigma=0)
     
@@ -70,28 +55,6 @@ def run_genx_sim(qs, film_d, film_r, film_sld):
 def run_xrefine_sim(qs, film_d, film_r, film_sld):
     device = "cpu"
     sim = Simulator(method='abeles', device=device)
-    
-    # XRefine Simulator Order:
-    # forward(thickness, roughness, sld)
-    # Inputs are [B, N_layers] or similar.
-    # Logic in `abeles.py` typically assumes:
-    # Ambient -> Layer 1 -> Layer 2... -> Substrate
-    # Let's verify abeles.py logic later, but standard is Top-Down.
-    
-    # Layers: 
-    # 1. SiO2 (Top)
-    # 2. Film (Bottom)
-    # Plus Ambient (index 0 implies Top Interface Roughness?)
-    
-    # Vectors construction:
-    # SLD: [Ambient, SiO2, Film, Substrate]
-    # Thickness: [SiO2, Film] (Ambient/Substrate are semi-infinite)
-    # Roughness: [Amb/SiO2, SiO2/Film, Film/Sub] 
-    
-    # Amb = 0
-    # Sub = 20.1
-    # SiO2 = 18.0
-    # Film = film_sld
     
     sld_tensor = torch.tensor([[0.0, 18.0, film_sld, 20.1]], device=device) # [1, 4]
     

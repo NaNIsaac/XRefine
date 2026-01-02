@@ -1,195 +1,175 @@
 import torch
-from pathlib import Path
-import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from pathlib import Path
+from typing import Dict, Any, Optional
 
 from xrefine.models import XRR_Fourier_PINN
 from xrefine.data.generator import generate_synthetic_batch
-from xrefine.data.augmentations import XRRAugmentations
+from xrefine.data.augmentations import XRRAugmentor
 from xrefine.config import XRefineConfig
 from xrefine.train_utils import plot_learning_curves
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
 
-# -----------------------------------------------------------------------------
-# 1. Advanced Metrics
-# -----------------------------------------------------------------------------
-def calculate_r2(true: np.ndarray, pred: np.ndarray):
-    ss_res = np.sum((true - pred) ** 2, axis=0)
-    ss_tot = np.sum((true - np.mean(true, axis=0)) ** 2, axis=0)
-    return 1 - (ss_res / (ss_tot + 1e-8))
-
-def calculate_metrics(preds: np.ndarray, targets: np.ndarray) -> dict:
-    errors = preds - targets
-    abs_errors = np.abs(errors)
-    mae = np.mean(abs_errors, axis=0)
-    rmse = np.sqrt(np.mean(errors ** 2, axis=0))
-    mape = np.mean(abs_errors / (np.abs(targets) + 1e-6), axis=0) * 100
-    r2 = calculate_r2(targets, preds)
-    return {"errors": errors, "abs_errors": abs_errors, "mae": mae, "rmse": rmse, "mape": mape, "r2": r2}
-
-def print_metrics_table(metrics: dict, param_names: list):
-    header = f"{'Parameter':<22} | {'MAE':<10} | {'RMSE':<10} | {'MAPE (%)':<10} | {'R2':<10}"
-    xlogger.info("\n" + "=" * len(header))
-    xlogger.info(header)
-    xlogger.info("-" * len(header))
-    for i, name in enumerate(param_names):
-        if i < len(metrics['mae']):
-            xlogger.info(f"{name:<22} | {metrics['mae'][i]:<10.4f} | {metrics['rmse'][i]:<10.4f} | {metrics['mape'][i]:<10.2f} | {metrics['r2'][i]:<10.4f}")
-    xlogger.info("=" * len(header) + "\n")
-
-# -----------------------------------------------------------------------------
-# 2. Visualization & Reporting
-# -----------------------------------------------------------------------------
-def save_correlation_plot(df: pd.DataFrame, param_names: list, save_path: Path):
-    n_params = len(param_names)
-    fig, axes = plt.subplots(2, n_params, figsize=(5 * n_params, 9))
-    
-    # 1개 파라미터일 경우 axes가 1D가 되는 현상 방지
-    if n_params == 1:
-        axes = axes.reshape(2, 1)
-
-    for i, name in enumerate(param_names):
-        clean = name.split(' (')[0]
-        y_true, y_pred, err = df[f"{clean}_True"], df[f"{clean}_Pred"], df[f"{clean}_Error"]
+class XRREvaluator:
+    """
+    XRR PINN 모델의 물리적 타당성 및 예측 정확도를 정량적/시각적으로 평가하는 클래스.
+    OOP 아키텍처를 통해 상태 관리와 평가 로직을 분리함.
+    """
+    def __init__(self, checkpoint_path: str, batch_size: int = 1000):
+        self.checkpoint_path = Path(checkpoint_path)
+        self.exp_dir = self.checkpoint_path.parent
+        self.batch_size = batch_size
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Scatter Plot
-        ax_s = axes[0][i]
-        min_v, max_v = y_true.min(), y_true.max()
-        ax_s.plot([min_v, max_v], [min_v, max_v], 'r--', alpha=0.7)
-        ax_s.scatter(y_true, y_pred, alpha=0.4, s=10, color='#3498db')
-        ax_s.set_title(f"{name}\n$R^2$: {calculate_r2(y_true.values, y_pred.values):.4f}")
-        
-        # Error Histogram
-        ax_h = axes[1][i]
-        ax_h.hist(err, bins=50, color='#2ecc71', alpha=0.7, edgecolor='black')
-        ax_h.axvline(0, color='red', linestyle='--')
-        
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150)
-    plt.close()
+        # 상태 변수 초기화
+        self.config: Optional[XRefineConfig] = None
+        self.model: Optional[torch.nn.Module] = None
+        self.results_df: Optional[pd.DataFrame] = None
+        self.metrics: Dict[str, Dict] = {}
 
-def save_advanced_reconstruction(qs, r_true, r_pred, target_vals, pred_vals, save_path, n_samples=6):
-    fig = plt.figure(figsize=(18, 11))
-    gs = gridspec.GridSpec(2, 3, hspace=0.3, wspace=0.2)
-    indices = np.random.choice(len(r_true), n_samples, replace=False)
-    
-    for i, idx in enumerate(indices):
-        inner = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=gs[i], height_ratios=[3, 1], hspace=0.05)
-        ax_top, ax_bot = plt.Subplot(fig, inner[0]), plt.Subplot(fig, inner[1])
-        fig.add_subplot(ax_top); fig.add_subplot(ax_bot)
-        
-        ax_top.semilogy(qs, r_true[idx], 'ko', markersize=2, alpha=0.3, label='True')
-        ax_top.semilogy(qs, r_pred[idx], 'r-', lw=1.5, label='PINN')
-        ax_top.set_title(f"Sample #{idx} | d_err: {pred_vals[idx,0]-target_vals[idx,0]:.2f}Å")
-        
-        # Residual Plot (Log Scale)
-        residual = np.log10(r_pred[idx] + 1e-10) - np.log10(r_true[idx] + 1e-10)
-        ax_bot.plot(qs, residual, color='blue', alpha=0.6)
-        ax_bot.axhline(0, color='black', lw=1, linestyle='--')
-        ax_bot.set_ylim(-0.5, 0.5)
-        
-    plt.savefig(save_path, dpi=150)
-    plt.close()
+        # 안전한 경로 객체 허용 (PyTorch 2.6 대응)
+        import pathlib
+        torch.serialization.add_safe_globals([pathlib.WindowsPath, pathlib.PosixPath])
 
-# -----------------------------------------------------------------------------
-# 3. Main Evaluation Function
-# -----------------------------------------------------------------------------
-def evaluate(args):
-    checkpoint_path = Path(args.checkpoint)
-    exp_dir = checkpoint_path.parent 
-    if not checkpoint_path.exists():
-        xlogger.error(f"❌ Checkpoint not found: {checkpoint_path}")
-        return
+    def setup(self):
+        """모델 및 설정을 로드하고 환경을 준비함"""
+        logger.info(f"🔍 Loading checkpoint from {self.checkpoint_path}...")
+        ckpt = torch.load(self.checkpoint_path, map_location='cpu', weights_only=False)
+        
+        # Config 복원
+        config_data = ckpt.get('config')
+        self.config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
+        
+        # 모델 초기화 및 가중치 로드
+        self.model = XRR_Fourier_PINN(config=self.config, device=self.device).to(self.device)
+        self.model.load_state_dict(ckpt['model_state_dict'])
+        self.model.eval()
+        
+        # 학습 곡선 출력
+        history = ckpt.get('history', {})
+        if history:
+            plot_learning_curves(history, self.exp_dir / "learning_curves.png")
+        
+        logger.info(f"✅ Model loaded: {self.config.model_type}")
 
-    xlogger.info(f"🔍 Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    # 1. 수렴 곡선 출력
-    history = checkpoint.get('history', {})
-    if history:
-        plot_learning_curves(history, exp_dir / "learning_curves.png")
-
-    # 2. Config 및 모델 로드
-    config_data = checkpoint.get('config')
-    config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
-    device = config.device
-    
-    xlogger.info(f"🧠 Initializing Model: {config.model_type}")
-    pinn = XRR_Fourier_PINN(config=config, device=device).to(device)
-    pinn.load_state_dict(checkpoint['model_state_dict'])
-    pinn.eval()
-    
-    # 3. 데이터 생성 (ParamSet 기반)
-    q_grid = config.q_grid.to(device)
-    # 중복 풋프린트 방지를 위해 do_footprint=False (Generator에서 수행하므로)
-    base_augmenter = XRRAugmentations(delta_q=0.0005, do_footprint=False)
-    
-    xlogger.info(f"🧪 Generating {args.batch_size} test samples...")
-    r_measured, p_true = generate_synthetic_batch(
-        args.batch_size, q_grid, config=config, augmenter=base_augmenter
-    )
-    
-    # 4. Inference
-    xlogger.info("🧠 Running Inference...")
-    with torch.no_grad():
+    @torch.no_grad()
+    def run_inference(self) -> tuple[torch.Tensor, ParamSet, ParamSet]:
+        """테스트 데이터를 생성하고 추론을 수행함"""
+        q_grid = self.config.q_grid.to(self.device)
+        augmenter = XRRAugmentor(delta_q=0.0005, do_footprint=False)
+        
+        logger.info(f"🧪 Generating {self.batch_size} test samples...")
+        r_measured, p_true = generate_synthetic_batch(
+            self.batch_size, q_grid, config=self.config, augmenter=augmenter
+        )
+        
         target_log_r = torch.log10(torch.clamp(r_measured, min=1e-9))
-        p_pred, r_reconstructed, _ = pinn(target_log_r)
+        p_pred, r_recon, _ = self.model(target_log_r)
         
-    # 5. 결과 언팩 (ParamSet Key 기반 접근)
-    # Numpy 변환 및 차원 정렬 (N=1 가정)
-    def to_np(tensor): return tensor.cpu().numpy()[:, 0]
+        return r_measured, p_true, p_pred, r_recon
 
-    # 비교할 타겟 파라미터 정의 (I0, bkg 포함)
-    eval_keys = ['d_f', 'sig_f', 'rho_f', 'L', 'I0', 'bkg']
-    param_display_names = [
-        "Thickness (Å)", "Roughness (Å)", "SLD (10⁻⁶ Å⁻²)", 
-        "Sample Len (mm)", "Intensity Scale", "Log Background"
-    ]
+    def calculate_statistics(self, p_true: ParamSet, p_pred: ParamSet):
+        """모든 파라미터에 대해 동적으로 지표를 산출함 (Dynamic Discovery)"""
+        all_results = []
+        
+        for key in p_true.keys():
+            if key not in p_pred: continue
+            
+            y_true = p_true[key].cpu().numpy().flatten()
+            y_pred = p_pred[key].cpu().numpy().flatten()
+            
+            # Metrics 계산 (Vectorized)
+            err = y_pred - y_true
+            mae = np.mean(np.abs(err))
+            rmse = np.sqrt(np.mean(err**2))
+            
+            # R2 Score: $1 - \frac{SS_{res}}{SS_{tot}}$
+            ss_res = np.sum(err**2)
+            ss_tot = np.sum((y_true - np.mean(y_true))**2)
+            r2 = 1 - (ss_res / (ss_tot + 1e-9))
+            
+            self.metrics[key] = {"MAE": mae, "RMSE": rmse, "R2": r2}
+            
+            all_results.append(pd.DataFrame({
+                'Parameter': key, 'True': y_true, 'Pred': y_pred, 'Error': err
+            }))
+            
+        self.results_df = pd.concat(all_results)
+        self.results_df.to_csv(self.exp_dir / "eval_results_full.csv", index=False)
 
-    preds_list = []
-    targets_list = []
+    def report(self):
+        """최종 리포트를 콘솔에 출력함"""
+        header = f"{'Parameter':<15} | {'MAE':<10} | {'RMSE':<10} | {'R2':<10}"
+        logger.info("\n" + "="*50 + f"\n{header}\n" + "-"*50)
+        for k, v in self.metrics.items():
+            logger.info(f"{k:<15} | {v['MAE']:<10.4f} | {v['RMSE']:<10.4f} | {v['R2']:<10.4f}")
+        logger.info("="*50)
 
-    for k in eval_keys:
-        preds_list.append(to_np(p_pred[k]))
-        if k in p_true:
-            targets_list.append(to_np(p_true[k]))
-        else:
-            # ParamSet에 없는 고정 상수 대응 (예: n_layers 확장 시)
-            targets_list.append(np.zeros(args.batch_size))
+    def save_visuals(self, q_grid, r_true, r_recon):
+        """상관관계도 및 물리 복원도 시각화"""
+        # 1. Correlation Plots (Dynamic Subplots)
+        keys = list(self.metrics.keys())
+        n_params = len(keys)
+        fig, axes = plt.subplots(2, n_params, figsize=(4 * n_params, 8))
+        if n_params == 1: axes = axes.reshape(2, 1)
 
-    # Metrics 계산용 Stack
-    preds_np = np.stack(preds_list, axis=1)
-    targets_np = np.stack(targets_list, axis=1)
-    
-    metrics = calculate_metrics(preds_np, targets_np)
-    print_metrics_table(metrics, param_display_names)
+        for i, key in enumerate(keys):
+            sub_df = self.results_df[self.results_df['Parameter'] == key]
+            # Scatter
+            axes[0, i].scatter(sub_df['True'], sub_df['Pred'], alpha=0.3, s=10)
+            axes[0, i].plot([sub_df['True'].min(), sub_df['True'].max()], 
+                           [sub_df['True'].min(), sub_df['True'].max()], 'r--')
+            axes[0, i].set_title(f"{key}\n$R^2$: {self.metrics[key]['R2']:.4f}")
+            # Error Hist
+            axes[1, i].hist(sub_df['Error'], bins=30, color='green', alpha=0.6)
+            axes[1, i].axvline(0, color='red', linestyle='--')
 
-    # 6. 데이터프레임 생성 및 저장
-    df = pd.DataFrame()
-    for i, name in enumerate(param_display_names):
-        clean = name.split(' (')[0].replace(" ", "_")
-        df[f"{clean}_True"] = targets_np[:, i]
-        df[f"{clean}_Pred"] = preds_np[:, i]
-        df[f"{clean}_Error"] = metrics["errors"][:, i]
+        plt.tight_layout()
+        plt.savefig(self.exp_dir / "eval_correlation.png", dpi=120)
 
-    df.to_csv(exp_dir / "eval_results.csv", index=False)
-    
-    # 7. 시각화 리포트
-    save_correlation_plot(df, param_display_names, exp_dir / "eval_correlation.png")
-    save_advanced_reconstruction(
-        q_grid.cpu().numpy(), r_measured.cpu().numpy(), r_reconstructed.cpu().numpy(),
-        targets_np, preds_np, exp_dir / "eval_reconstruction.png"
-    )
-    
-    xlogger.info(f"✅ Evaluation Complete. Reports in: {exp_dir}")
+        # 2. Physics Reconstruction (Sample Visualization)
+        self._plot_reconstruction(q_grid, r_true, r_recon)
+        plt.close('all')
 
+    def _plot_reconstruction(self, q, r_t, r_r, n_samples=6):
+        """물리 곡선 매칭 시각화 (Internal helper)"""
+        fig = plt.figure(figsize=(15, 10))
+        gs = gridspec.GridSpec(2, 3, hspace=0.3)
+        indices = np.random.choice(len(r_t), n_samples, replace=False)
+        
+        for i, idx in enumerate(indices):
+            sub_gs = gridspec.GridSpecFromSubplotSpec(2, 1, gs[i], height_ratios=[3, 1], hspace=0.05)
+            ax_t, ax_b = fig.add_subplot(sub_gs[0]), fig.add_subplot(sub_gs[1])
+            
+            ax_t.semilogy(q, r_t[idx].cpu(), 'ko', ms=2, alpha=0.2)
+            ax_t.semilogy(q, r_r[idx].cpu(), 'r-', lw=1.5)
+            
+            # Log Residuals
+            res = torch.log10(r_r[idx]+1e-10) - torch.log10(r_t[idx]+1e-10)
+            ax_b.plot(q, res.cpu(), color='blue', alpha=0.5)
+            ax_b.axhline(0, color='k', ls='--')
+            ax_b.set_ylim(-0.5, 0.5)
+            
+        plt.savefig(self.exp_dir / "eval_reconstruction.png", dpi=120)
+
+# -----------------------------------------------------------------------------
+# CLI Entry point
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=1000)
     args = parser.parse_args()
-    evaluate(args)
+
+    evaluator = XRREvaluator(args.checkpoint, args.batch_size)
+    evaluator.setup()
+    r_meas, p_true, p_pred, r_recon = evaluator.run_inference()
+    evaluator.calculate_statistics(p_true, p_pred)
+    evaluator.report()
+    evaluator.save_visuals(evaluator.config.q_grid, r_meas, r_recon)
+    logger.info("✅ Evaluation Task Finished.")

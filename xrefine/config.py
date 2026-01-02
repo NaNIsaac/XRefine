@@ -32,11 +32,11 @@ class AugmentationConfig(BaseModel):
 
 class XRefineConfig(BaseModel):
     """전체 프로젝트 통합 설정 클래스"""
-    
+
     # --- 실험 및 저장 경로 ---
-    experiment_name: str = 'test'
-    # save_root: str = r'D:\03_Resources\Data\XRR_AI\PINN'
-    save_root: Path = Path(r'C:\Warehouse\data\XRR_AI\PINN')
+    experiment_name: str = 'test2'
+    save_root: Path = Path(r'D:\03_Resources\Data\XRR_AI\PINN')
+    # save_root: Path = Path(r'C:\Warehouse\data\XRR_AI\PINN')
     log_dir: Path = Path(r'logs')
     # --- 물리적 측정 범위 (q-grid) ---
     q_min_tth: float = 0.05
@@ -63,16 +63,16 @@ class XRefineConfig(BaseModel):
 
     # --- 학습 파라미터 (Curriculum Learning) ---
     batch_size: int = 50
-    lr: float = 2e-4             # Fourier 모델은 낮은 LR이 안정적
+    lr: float = 2e-4
     train_steps: int = 10000
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 하이브리드 가중치 (Warmup)
     sup_w_start: float = 1000.0
-    sup_w_end: float = 10.0
+    sup_w_end: float = 100.0
     warmup_steps: int = 3000
     sld_weight_factor: float = 3.0
-
+    phys_penalty_w: float = 3
     supervise_weight_params: ParamSet = {
         "d_f": 1.0,
         "sig_f": 1.0,
@@ -109,6 +109,28 @@ class XRefineConfig(BaseModel):
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
         return cls(**data)
+    
+    def get_range(self, key: str) -> tuple[float, float]:
+        """파라미터 이름을 입력받아 해당 범위를 반환"""
+        mapping = {
+            "d_f": self.thick_range,
+            "sig_f": self.rough_range,
+            "rho_f": self.sld_range,
+            "d_ox": self.sio2_thick_range,
+            "sig_ox": self.sio2_rough_range,
+            "rho_ox": self.sio2_sld_range,
+            "L": self.sample_len_range,
+            "beam_width": self.beam_width_range,
+            "bkg": self.augmentations.bg_range,
+            "i0": (1 - self.augmentations.intensity_noise_scale, 
+                   1 + self.augmentations.intensity_noise_scale)
+        }
+        
+        if key in mapping:
+            return mapping[key]
+        
+        # 기본값 (에러 방지용)
+        return (0.0, 1.0)
 
 
 CONFIG = XRefineConfig()

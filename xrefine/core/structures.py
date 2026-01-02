@@ -185,10 +185,10 @@ def format_params(params: ParamSet, title: str = "Parameters") -> str:
             case torch.Tensor() if v.numel() == 1:
                 output.write(f"  {k:12}: {v.item():.4f}\n")
             case torch.Tensor():
-                output.write(f"  {k:12}: {v.detach().cpu().numpy().flatten()[:5]:.4f} (batch)\n")
+                output.write(f"  {k:12}: {v.detach().cpu().numpy().flatten()[:5]} (batch)\n")
             case float():
                 output.write(f"  {k:12}: {v:.4f}\n")
             case _:
                 output.write(f"  {k:12}: {str(v)}\n")
-                
+
     return output.getvalue()

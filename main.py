@@ -1,18 +1,24 @@
+# main.py
+
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import typer
 from loguru import logger
 from xrefine.config import CONFIG
 from xrefine.train import XRefineTrainer
-from xrefine.evaluate import evaluate 
+
+from xrefine.evaluate import XRREvaluator 
 from xrefine.models import XRR_Fourier_PINN
 
-# Typer 앱 초기화
+
 app = typer.Typer(
     help="XRefine: Physics-Informed AI for XRR",
     add_completion=False,
-    rich_markup_mode="rich"
+    rich_markup_mode="rich",
+    pretty_exceptions_enable=False,
+    pretty_exceptions_show_locals=False
 )
 
 @app.command()
@@ -49,23 +55,34 @@ def train(
         steps_per_epoch=steps_per_epoch, 
         resume=resume
     )
+    logger.info("✅ Training session completed successfully.")
 
 @app.command()
 def eval(
-    checkpoint: str | None = typer.Option(None, help="Path to model checkpoint"),
+    checkpoint: Optional[str] = typer.Option(None, help="Path to model checkpoint"),
     batch_size: int = typer.Option(1000, help="Batch size for evaluation"),
 ):
-    """Evaluate the trained PINN model."""
+    """
+    현대적인 OOP 기반 Evaluator를 사용하여 모델을 평가합니다.
+    모든 파라미터에 대한 통계 지표 및 물리 복원도 시각화 리포트를 생성합니다.
+    """
+    # 1. 체크포인트 경로 설정
     if not checkpoint:
-        checkpoint = str(CONFIG.save_root / CONFIG.experiment_name / "best_pinn.pt")
+        checkpoint = str(CONFIG.save_root / CONFIG.experiment_name / "best.pt")
     
     ckpt_path = Path(checkpoint)
     if not ckpt_path.exists():
-        logger.error(f"Checkpoint not found at {checkpoint}")
+        logger.error(f"❌ Checkpoint not found at {checkpoint}")
         raise typer.Exit(code=1)
 
-    args_ns = SimpleNamespace(checkpoint=checkpoint, batch_size=batch_size)
-    evaluate(args_ns)
+    evaluator = XRREvaluator(checkpoint_path=checkpoint, batch_size=batch_size)
+    evaluator.setup()
+    r_meas, p_true, p_pred, r_recon = evaluator.run_inference()
+    evaluator.calculate_statistics(p_true, p_pred)
+    evaluator.report()
+    evaluator.save_visuals(evaluator.config.q_grid, r_meas, r_recon)
+    logger.info(f"✅ Evaluation complete. All reports saved in: {evaluator.exp_dir}")
+
 
 @app.command()
 def config():

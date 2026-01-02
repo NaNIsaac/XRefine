@@ -26,7 +26,7 @@ def setup_logger(level="INFO") -> None:
     loguru.logger.add(log_file, format=formatter, rotation="500 MB", compression="zip", level=level)
     loguru.logger.add(sys.stdout, format=formatter, level=level)
 
-setup_logger()
+setup_logger("DEBUG")
 logger = loguru.logger
 
 if __name__ == "__main__":
