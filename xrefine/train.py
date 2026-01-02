@@ -42,28 +42,45 @@ class XRefineTrainer:
     def train_epoch(self, epoch, steps, curr_sup_w):
         self.model.train()
         total_loss = 0
-        for _ in range(steps):
+        
+        # desc를 통해 현재 에폭 번호를 표시하면 더 명확합니다.
+        # leave=False로 설정하여 에폭 종료 후 바를 지웁니다.
+        pbar = tqdm(range(steps), desc=f"Epoch {epoch:03d}", leave=False)
+        
+        for step in pbar:
             r_meas, p_true = generate_synthetic_batch(
                 self.cfg.batch_size, self.q_grid, self.cfg, augmenter=self.augmenter
             )
+            # 수치 안정성을 위해 clamp 추가
             log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             
             self.optimizer.zero_grad(set_to_none=True)
+            
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
                 p_pred, r_recon, phys_penalty = self.model(log_r_obs)
-                loss, _, _, _ = self.criterion(
+                loss, l_recon, l_param, p_phys = self.criterion(
                     p_pred, r_recon, log_r_obs, p_true, 
                     self.cfg, curr_sup_w, phys_penalty
                 )
 
             if self.scaler:
                 self.scaler.scale(loss).backward()
+                # Gradient Clipping 추가 (NaN 방지 안전장치)
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
-            total_loss += loss.item()
+            
+            current_loss = loss.item()
+            total_loss += current_loss
+            
+            if step % 5 == 0:
+                pbar.set_postfix({"loss": f"{current_loss:.4f}"})
+                
         return total_loss / steps
 
     @torch.no_grad()
