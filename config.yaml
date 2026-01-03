@@ -56,18 +56,18 @@ train:
     d_ox: 2
     sig_ox: 1
     rho_ox: 2
-    i0: 1.0
+    i0: 3.0
     bkg: 1.0
     L: 5.0
-    beam_width: 10.0
+    beam_width: 5
 
 # [Model Architecture]
 model:
   encoder_depth: 6
   n_channels: 128
-  kernel_size: 15
+  kernel_size: 21
   dilation: 2
-  fourier_scale: 200
+  fourier_scale: 400
   mapping_size: 64
   hidden_dim: 1024
   n_layers: 1
