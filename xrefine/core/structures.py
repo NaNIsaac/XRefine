@@ -172,6 +172,27 @@ class ParamSet:
             merged[f.name] = torch.cat(tensors, dim=0)
         return cls(**merged)
 
+    def clone(self) -> "ParamSet":
+        """모든 텐서 필드를 복제하여 새로운 ParamSet 객체 생성"""
+        return ParamSet(**{
+            f.name: getattr(self, f.name).clone() 
+            for f in fields(self)
+        })
+
+    def detach(self) -> "ParamSet":
+        """그래프에서 분리된(gradient 추적 중단) 복제본 생성"""
+        return ParamSet(**{
+            f.name: getattr(self, f.name).detach() 
+            for f in fields(self)
+        })
+
+    def to(self, device: torch.device | str) -> "ParamSet":
+        """모든 텐서를 지정된 장치로 이동"""
+        return ParamSet(**{
+            f.name: getattr(self, f.name).to(device) 
+            for f in fields(self)
+        })
+
     def __repr__(self) -> str:
         class_name = self.__class__.__name__
         items = []

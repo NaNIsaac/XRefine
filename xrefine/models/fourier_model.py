@@ -165,3 +165,52 @@ class XRR_Fourier_PINN(nn.Module):
         phys_penalty = self.validate_physics(params)
 
         return params, r_final, phys_penalty
+    
+    def forward_with_params(self, params: ParamSet) -> tuple[ParamSet, Tensor, Tensor]:
+        """
+        [Physics Core] 파라미터 세트를 직접 입력받아 물리 법칙에 따른 반사율 곡선을 생성합니다.
+        인코더를 거치지 않으므로 Local Refinement(미세 조정) 및 디버깅에 사용됩니다.
+        """
+        # 1. 배치 사이즈 확인 (파라미터 텐서 중 하나를 기준으로 함)
+        batch_size = params.d_f.size(0)
+        
+        # 2. 물리 시뮬레이션 영역 (Abeles Matrix + Integrated Footprint)
+        # 고정밀 최적화를 위해 이 구간은 보통 Autocast를 비활성화(float32)하여 수행합니다.
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            # A. 다층 구조 텐서 조립 (Ambient-Film-Oxide-Substrate)
+            # thickness: (B, 2), roughness: (B, 3)
+            thickness = torch.cat([params.d_f, params.d_ox], dim=-1)
+            roughness = torch.cat([params.sig_f, params.sig_ox, params.sig_ox], dim=-1)
+
+            # B. SLD 구성 (Ambient SLD는 항상 0, Substrate SLD는 고정)
+            amb = torch.zeros(batch_size, 1, device=self.device)
+            sub = torch.full((batch_size, 1), self.config.ranges.substrate_sld, device=self.device)
+            sld_full = torch.cat([amb, params.rho_f, params.rho_ox, sub], dim=-1)
+
+            # C. 통합 시뮬레이터 호출
+            # q_grid를 배치 크기에 맞게 확장
+            q_batch = self.q_grid.unsqueeze(0).expand(batch_size, -1)
+            dq = torch.tensor([[self.config.instrument.res]], device=self.device)
+
+            # 풋프린트(L, beam_width)가 포함된 통합 물리 엔진 실행
+            r_recon = self.simulator(
+                q=q_batch,
+                thickness=thickness,
+                roughness=roughness,
+                sld=sld_full,
+                sample_length=params.L,          # [필수] 기하학 보정 인자 전달
+                beam_width=params.beam_width,    # [필수] 기하학 보정 인자 전달
+                dq=dq
+            )
+
+        # 3. 측정 환경 합성 (Scaling & Background)
+        # R_final = I0 * R_physics + 10^Background
+        r_final = (params.i0 * r_recon) + torch.pow(10.0, params.bkg)
+        
+        # 수치적 안정성을 위한 클램핑 (10^0 이상의 강도는 물리적으로 불가능)
+        r_final = torch.clamp(r_final, min=1e-11, max=2.0)
+
+        # 4. 물리적 제약 조건 페널티 계산
+        penalty = self.validate_physics(params)
+
+        return params, r_final, penalty
