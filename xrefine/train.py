@@ -5,57 +5,82 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import Optional
 
-from xrefine.config import CONFIG
+from xrefine.config import CONFIG, XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.train_utils import XRRWeightedLoss, save_pinn_report
 from xrefine.logger import logger
 
-torch.backends.cudnn.enabled = False
+# PyTorch 2.9+ 최적화 설정
+torch.backends.cudnn.benchmark = True
 
 class XRefineTrainer:
-    def __init__(self, model, config=CONFIG):
+    def __init__(self, model, config: XRefineConfig = CONFIG):
         self.cfg = config
         self.device = torch.device(config.device)
+        
+        # 모델 및 그리드 설정
         self.model = model.to(self.device)
         self.q_grid = config.q_grid.to(self.device)
-    
+        
+        # 유틸리티 초기화
         self.criterion = XRRWeightedLoss(self.q_grid).to(self.device)
         self.augmenter = XRRAugmentor(config).to(self.device)
         
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=config.lr, weight_decay=1e-4)
+        # 최적화 설정
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), 
+            lr=config.train.lr, 
+            weight_decay=config.train.weight_decay
+        )
+        # 스케줄러 추가 (Warmup 대응)
+        self.scheduler = optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=config.train.lr,
+            steps_per_epoch=config.train.steps_per_epoch,
+            epochs=config.train.epochs,
+            pct_start=0.1 # 초기 10% 구간 warmup
+        )
         self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
-        
+
+        # 경로 및 로거 설정
         self.save_dir = Path(config.save_root) / config.experiment_name
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(self.save_dir / "logs"))
         
-        # --- 상태 관리 변수 ---
+        # 상태 관리
         self.start_epoch = 0
         self.best_val_loss = float('inf')
         self.history = {"train_loss": [], "val_loss": []}
 
-    def _get_curriculum_weight(self, epoch, max_epochs):
-        progress = min(epoch / (max_epochs * 0.5), 1.0)
-        return self.cfg.sup_w_start * (1 - progress) + self.cfg.sup_w_end * progress
+    def _get_curriculum_weight(self, epoch: int) -> float:
+        """에폭 진행에 따른 파라미터 지도 학습 가중치 계산 (Linear Decay)"""
+        max_epochs = self.cfg.train.epochs
+        progress = min(epoch / (max_epochs * 0.7), 1.0) # 70% 시점까지 선형 증가
+        w_start = self.cfg.train.sup_w_start
+        w_end = self.cfg.train.sup_w_end
+        return w_start * (1 - progress) + w_end * progress
 
-    def train_epoch(self, epoch, steps, curr_sup_w):
+    def train_epoch(self, epoch: int, curr_sup_w: float):
         self.model.train()
         total_loss = 0
+        steps = self.cfg.train.steps_per_epoch
         
-        # desc를 통해 현재 에폭 번호를 표시하면 더 명확합니다.
-        # leave=False로 설정하여 에폭 종료 후 바를 지웁니다.
         pbar = tqdm(range(steps), desc=f"Epoch {epoch:03d}", leave=False)
         
         for step in pbar:
+            # 1. 데이터 생성 및 전처리
             r_meas, p_true = generate_synthetic_batch(
-                self.cfg.batch_size, self.q_grid, self.cfg, augmenter=self.augmenter
+                batch_size=self.cfg.train.batch_size, 
+                q_grid=self.q_grid, 
+                config=self.cfg, 
+                augmenter=self.augmenter
             )
-            # 수치 안정성을 위해 clamp 추가
             log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             
             self.optimizer.zero_grad(set_to_none=True)
             
+            # 2. Forward & Loss 계산
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
                 p_pred, r_recon, phys_penalty = self.model(log_r_obs)
                 loss, l_recon, l_param, p_phys = self.criterion(
@@ -65,21 +90,23 @@ class XRefineTrainer:
 
             if self.scaler:
                 self.scaler.scale(loss).backward()
-                # Gradient Clipping 추가 (NaN 방지 안전장치)
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                self.scheduler.step()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
                 self.optimizer.step()
-            
+                self.scheduler.step()
+
             current_loss = loss.item()
             total_loss += current_loss
-            
-            if step % 5 == 0:
-                pbar.set_postfix({"loss": f"{current_loss:.4f}"})
+            if step % 10 == 0:
+                pbar.set_postfix({"L": f"{current_loss:.4f}", "LR": f"{self.scheduler.get_last_lr()[0]:.2e}"})
                 
         return total_loss / steps
 
@@ -87,7 +114,10 @@ class XRefineTrainer:
     def validate(self, curr_sup_w: float):
         self.model.eval()
         r_meas, p_true = generate_synthetic_batch(
-            self.cfg.batch_size, self.q_grid, self.cfg, augmenter=self.augmenter
+            batch_size=self.cfg.train.batch_size, 
+            q_grid=self.q_grid, 
+            config=self.cfg, 
+            augmenter=self.augmenter
         )
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
         p_pred, r_recon, phys_penalty = self.model(log_r_obs)
@@ -97,91 +127,68 @@ class XRefineTrainer:
         )
         return loss.item(), p_pred, r_recon
 
-    def load_checkpoint(self, path: Optional[Path] = None):
-        """저장된 체크포인트를 불러와 모델, 옵티마이저, 학습 기록 복원"""
-        checkpoint_path = path or (self.save_dir / "last.pt")
-        
-        if not checkpoint_path.exists():
-            # 파일이 없으면 그냥 리턴하여 self.start_epoch = 0 유지
-            logger.info(f"No checkpoint found at {checkpoint_path}. Starting from E000.")
-            return
-
-        try:
-            logger.info(f"Loading checkpoint from {checkpoint_path}...")
-            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-            
-            # 1. 모델 및 옵티마이저 상태 복원
-            self.model.load_state_dict(ckpt['model_state_dict'])
-            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            
-            # 2. 에폭 정보 업데이트 (저장된 에폭 다음부터 시작)
-            self.start_epoch = ckpt['epoch'] + 1
-            
-            # 3. 기타 상태 복원
-            self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
-            self.history = ckpt.get('history', self.history)
-            
-            logger.info(f"✅ Resume success: Starting from Epoch {self.start_epoch:03d}")
-        except Exception as e:
-            logger.error(f"❌ Failed to load checkpoint: {e}. Starting from scratch.")
-
-    def fit(self, max_epochs=200, steps_per_epoch=100, resume=False):
-        # 1. Resume 요청 시 체크포인트 로드 시도
+    def fit(self, resume: bool = False):
         if resume:
             self.load_checkpoint()
-
-        logger.info(f"🚀 XRefine Session Start: {self.cfg.experiment_name} | Device: {self.device}")
-
-        pbar = tqdm(range(self.start_epoch, max_epochs), desc="Training")
-        
-        for epoch in pbar:
-            curr_w = self._get_curriculum_weight(epoch, max_epochs)
             
-            # --- Training & Validation ---
-            avg_train_loss = self.train_epoch(epoch, steps_per_epoch, curr_w)
+        max_epochs = self.cfg.train.epochs
+        logger.info(f"Session Start: {self.cfg.experiment_name} | Device: {self.device}")
+
+        for epoch in range(self.start_epoch, max_epochs):
+            curr_w = self._get_curriculum_weight(epoch)
+            
+            avg_train_loss = self.train_epoch(epoch, curr_w)
             val_loss, v_pred, v_recon = self.validate(curr_w)
             
-            # 결과 기록
+            # 히스토리 기록
             self.history["train_loss"].append(avg_train_loss)
             self.history["val_loss"].append(val_loss)
             
-            # TensorBoard
+            # TensorBoard 기록
             self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
             self.writer.add_scalar("Loss/Val", val_loss, epoch)
             self.writer.add_scalar("Meta/Sup_Weight", curr_w, epoch)
+            self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
 
-            # --- [중요] 체크포인트 저장 ---
-            # last.pt는 매 에폭 덮어쓰기 (Resume용)
+            # 체크포인트 관리
             self._save_checkpoint("last.pt", epoch)
-
-            # 성능 갱신 시 best.pt 저장 (최종 결과물용)
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self._save_checkpoint("best.pt", epoch)
 
-            # 시각화 리포트 (10에폭마다)
-            if epoch % 10 == 0:
-                report_name = f"report_E{epoch:03d}.png"
+            # 시각화 리포트 (5에폭마다)
+            if epoch % 20 == 0:
                 save_pinn_report(
                     self.q_grid, torch.log10(v_recon[0:1]), v_recon[0:1], 
                     self.history["train_loss"], v_pred, None, 
-                    self.save_dir / report_name, step=epoch
+                    self.save_dir / f"report_E{epoch:03d}.png", step=epoch
                 )
 
-            # 진행 표시줄 업데이트
-            pbar.set_postfix({
-                "Loss": f"{val_loss:.4f}", 
-                "Best": f"{self.best_val_loss:.4f}",
-                "W": f"{curr_w:.1f}"
-            })
+            logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | W: {curr_w:.1f}")
 
-    def _save_checkpoint(self, name, epoch):
+    def _save_checkpoint(self, name: str, epoch: int):
         save_path = self.save_dir / name
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_loss': self.best_val_loss,
             'config': self.cfg.model_dump(),
             'history': self.history
         }, save_path)
+
+    def load_checkpoint(self, path: Optional[Path] = None):
+        checkpoint_path = path or (self.save_dir / "last.pt")
+        if not checkpoint_path.exists(): return
+
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt['model_state_dict'])
+        self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        if 'scheduler_state_dict' in ckpt:
+            self.scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        
+        self.start_epoch = ckpt['epoch'] + 1
+        self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        self.history = ckpt.get('history', self.history)
+        logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")

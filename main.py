@@ -1,93 +1,136 @@
-# main.py
-
+import argparse
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Optional
+from typing import List, Dict, Any
 
-import typer
-from loguru import logger
-from xrefine.config import CONFIG
+from xrefine.config import XRefineConfig, CONFIG
 from xrefine.train import XRefineTrainer
-
 from xrefine.evaluate import XRREvaluator 
 from xrefine.models import XRR_Fourier_PINN
+from xrefine.logger import logger
 
+def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[str, Any]:
+    """CLI 인자를 계층적 dict로 변환 (config. 접두사 자동 처리)"""
+    for i in range(0, len(unknown), 2):
+        if not unknown[i].startswith('--'):
+            continue
+        
+        key = unknown[i].lstrip('-')
+        value_str = unknown[i+1]
+        parts = key.split('.')
 
-app = typer.Typer(
-    help="XRefine: Physics-Informed AI for XRR",
-    add_completion=False,
-    rich_markup_mode="rich",
-    pretty_exceptions_enable=False,
-    pretty_exceptions_show_locals=False
-)
+        if parts[0] == 'config' and len(parts) > 1:
+            parts = parts[1:]
 
-@app.command()
-@logger.catch
-def train(
-    name: str | None = typer.Option(None, "--name", help="Experiment name"),
-    lr: float | None = typer.Option(None, help="Learning rate"),
-    layers: int | None = typer.Option(None, "--layers", help="Number of film layers"),
-    epochs: int = typer.Option(200, help="Total epochs"),
-    steps_per_epoch: int = typer.Option(100, help="Steps per epoch"),
-    resume: bool = typer.Option(False, "--resume", help="Resume from latest.pt"),
-):
-    """Start PINN training for XRR analysis."""
+        target = config_dict
+        for part in parts[:-1]:
+            if part not in target or not isinstance(target[part], dict):
+                target[part] = {}
+            target = target[part]
 
-    cli_params = {
-        "experiment_name": name,
-        "lr": lr,
-        "n_layers": layers,
-    }
-    cli_params = {k: v for k, v in cli_params.items() if v is not None}
-    config = CONFIG.model_copy(update=cli_params)
+        try:
+            if value_str.lower() in ('true', 'false'):
+                val = value_str.lower() == 'true'
+            elif '[' in value_str:
+                import ast
+                val = ast.literal_eval(value_str)
+            elif '.' in value_str or 'e' in value_str:
+                val = float(value_str)
+            else:
+                val = int(value_str)
+        except (ValueError, SyntaxError):
+            val = value_str
+            
+        target[parts[-1]] = val
+    return config_dict
 
-    save_dir = Path(config.save_root) / config.experiment_name
+def print_config_summary(config: XRefineConfig):
+    """현재 세션의 핵심 파라미터를 표 형태로 출력"""
+    line = "=" * 60
+    logger.info(f"\n{line}\n[PRE-FLIGHT CHECK: SESSION CONFIGURATION]\n{line}")
+    
+    # 1. 기본 정보
+    logger.info(f"Experiment : {config.experiment_name}")
+    logger.info(f"Save Path  : {config.save_root / config.experiment_name}")
+    logger.info(f"Device     : {config.device}")
+    
+    # 2. 하이퍼파라미터 (Table Style)
+    logger.info(f"{'-'*60}")
+    logger.info(f"{'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")
+    logger.info(f"{'-'*60}")
+    logger.info(f"{'Training':<12} | {'LR':<15} | {config.train.lr:.1e}")
+    logger.info(f"{'Training':<12} | {'Batch Size':<15} | {config.train.batch_size}")
+    logger.info(f"{'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
+    logger.info(f"{'Training':<12} | {'Sup Weight':<15} | {config.train.sup_w_start} -> {config.train.sup_w_end}")
+    
+    logger.info(f"{'Model':<12} | {'N Layers':<15} | {config.model.n_layers}")
+    logger.info(f"{'Model':<12} | {'Fourier Scale':<15} | {config.model.fourier_scale}")
+    
+    # 3. 물리 범위 요약 (핵심만)
+    logger.info(f"{'-'*60}")
+    logger.info("Physics Ranges (First Layer if N>1):")
+    logger.info(f"   - Thickness (d_f) : {config.ranges.d_f} [Å]")
+    logger.info(f"   - Roughness(sig_f): {config.ranges.sig_f} [Å]")
+    logger.info(f"   - SLD (rho_f)     : {config.ranges.rho_f} [10^-6 Å^-2]")
+    logger.info(f"{line}\n")
+
+def run_train(config: XRefineConfig, resume: bool):
+    """학습 세션 실행"""
+    # [Added] 요약 출력
+    print_config_summary(config)
+    
+    save_dir = config.save_root / config.experiment_name
     save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 설정 백업
     config.save_yaml(save_dir / "config.yaml")
-
-    logger.info(f"[INIT] {config.experiment_name} | Layers: {config.n_layers} | Device: {config.device}")
 
     model = XRR_Fourier_PINN(config=config, device=config.device)
     trainer = XRefineTrainer(model=model, config=config)
+    trainer.fit(resume=resume)
+    logger.info("Training session completed successfully.")
 
-    trainer.fit(
-        max_epochs=epochs, 
-        steps_per_epoch=steps_per_epoch, 
-        resume=resume
-    )
-    logger.info("✅ Training session completed successfully.")
+def run_eval(config: XRefineConfig, checkpoint: str | None, batch_size: int):
+    """평가 세션 실행"""
+    ckpt_path = checkpoint or str(config.save_root / config.experiment_name / "best.pt")
+    if not Path(ckpt_path).exists():
+        logger.error(f"❌ Checkpoint not found: {ckpt_path}")
+        return
 
-@app.command()
-def eval(
-    checkpoint: Optional[str] = typer.Option(None, help="Path to model checkpoint"),
-    batch_size: int = typer.Option(1000, help="Batch size for evaluation"),
-):
-    """
-    현대적인 OOP 기반 Evaluator를 사용하여 모델을 평가합니다.
-    모든 파라미터에 대한 통계 지표 및 물리 복원도 시각화 리포트를 생성합니다.
-    """
-    # 1. 체크포인트 경로 설정
-    if not checkpoint:
-        checkpoint = str(CONFIG.save_root / CONFIG.experiment_name / "best.pt")
-    
-    ckpt_path = Path(checkpoint)
-    if not ckpt_path.exists():
-        logger.error(f"❌ Checkpoint not found at {checkpoint}")
-        raise typer.Exit(code=1)
-
-    evaluator = XRREvaluator(checkpoint_path=checkpoint, batch_size=batch_size)
+    logger.info(f"🔍 [EVAL] Using checkpoint: {ckpt_path}")
+    evaluator = XRREvaluator(checkpoint_path=ckpt_path, batch_size=batch_size)
     evaluator.setup()
-    r_meas, p_true, p_pred, r_recon = evaluator.run_inference()
-    evaluator.calculate_statistics(p_true, p_pred)
-    evaluator.report()
-    evaluator.save_visuals(evaluator.config.q_grid, r_meas, r_recon)
-    logger.info(f"✅ Evaluation complete. All reports saved in: {evaluator.exp_dir}")
+    evaluator.evaluate_all()
 
+def main():
+    parser = argparse.ArgumentParser(description="XRefine: Physics-Informed AI for XRR")
+    parser.add_argument("subcommand", choices=["train", "eval", "config"], help="작업 모드 선택")
+    parser.add_argument("--cfg", type=str, default="config.yaml", help="기본 설정 파일 경로")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--checkpoint", type=str)
+    parser.add_argument("--batch_size", type=int, default=1000)
+    
+    args, unknown = parser.parse_known_args()
 
-@app.command()
-def config():
-    """Show current configuration."""
-    logger.info("\n" + CONFIG.model_dump_json(indent=2))
+    try:
+        config_obj = XRefineConfig.load_yaml(args.cfg)
+    except FileNotFoundError:
+        logger.warning(f"{args.cfg} not found. Using default CONFIG object.")
+        config_obj = CONFIG
+
+    if unknown:
+        config_dict = config_obj.model_dump()
+        updated_dict = merge_unknown_args(config_dict, unknown)
+        config_obj = XRefineConfig(**updated_dict)
+
+    match args.subcommand:
+        case "train":
+            run_train(config_obj, args.resume)
+        case "eval":
+            run_eval(config_obj, args.checkpoint, args.batch_size)
+        case "config":
+            print(config_obj.model_dump_json(indent=2))
+        case _:
+            parser.print_help()
 
 if __name__ == "__main__":
-    app()
+    main()

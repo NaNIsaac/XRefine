@@ -14,6 +14,8 @@ def abeles_constant_smearing(
     thickness: Tensor,
     roughness: Tensor,
     sld: Tensor,
+    sample_length: Tensor,
+    beam_width: Tensor,
     dq: Tensor = None,
     gauss_num: int = 51,
     xrr_dq: bool = True,
@@ -42,7 +44,7 @@ def abeles_constant_smearing(
 
     # Calculate Reflectivity on linear Q grid
     # curves: (batch, q_lin_num)
-    curves = abeles_func(q_lin, thickness, roughness, sld)
+    curves = abeles_func(q_lin, thickness, roughness, sld, sample_length, beam_width)
 
     # Convolve with resolution kernel
     # Use torch.conv1d with groups=batch_size to apply different kernels per sample.

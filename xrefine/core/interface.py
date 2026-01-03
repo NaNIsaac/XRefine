@@ -27,6 +27,8 @@ class Simulator(nn.Module):
         thickness: Tensor,
         roughness: Tensor,
         sld: Tensor,
+        sample_length: Tensor,
+        beam_width: Tensor,
         dq: Tensor | None = None,
         **kwargs
     ) -> Tensor:
@@ -48,16 +50,17 @@ class Simulator(nn.Module):
         thickness = thickness.to(self.device)
         roughness = roughness.to(self.device)
         sld = sld.to(self.device)
-        
+        L, W = sample_length.to(self.device), beam_width.to(self.device)
         if self.method == 'abeles':
             if dq is not None:
                 if not torch.is_tensor(dq):
                     dq = torch.tensor([[dq]], device=self.device, dtype=q.dtype)
                 else:
                     dq = dq.to(self.device)
-                return abeles_constant_smearing(q, thickness, roughness, sld, dq=dq, **kwargs)
+                return abeles_constant_smearing(q, thickness, roughness, sld,
+                                                sample_length=L, beam_width=W, dq=dq, **kwargs)
             else:
-                return abeles(q, thickness, roughness, sld)
+                return abeles(q, thickness, roughness, sld, L, W)
         elif self.method == 'kinematical':
             return kinematical_approximation(q, thickness, roughness, sld, **kwargs)
         else:

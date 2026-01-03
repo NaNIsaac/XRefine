@@ -1,135 +1,138 @@
-from typing import Literal
-from pathlib import Path
-
-from pydantic import BaseModel, Field, ConfigDict
 import torch
-import numpy as np
 import yaml
+from pathlib import Path
+from typing import Literal, Self, Tuple
+from pydantic import BaseModel, Field, ConfigDict
 
+from xrefine.physics_utils import tth2q
 from xrefine.core.structures import ParamSet
 
-# --- 물리 상수 및 유틸리티 ---
-def tth2q(tth: float, wavelength: float = 1.5406) -> float:
-    """2-theta (deg)를 Scattering Vector q (1/Å)로 변환"""
-    rad = np.deg2rad(0.5 * tth)
-    return float((4 * np.pi / wavelength) * np.sin(rad))
-
+# 1. 장비 사양 설정
 class InstrumentConfig(BaseModel):
-    """장비 하드웨어 고정 사양 및 노이즈 기저치"""
-    wavelength: float = 1.5406    # Cu K-alpha (Å)
-    beam_width: float = 0.1      # mm (FWHM)
-    res: float = 0.002           # dq resolution (Smearing 정도)
-    I0: float = 1.0              # 데이터가 정규화되었으므로 1.0 기준
-    Ibkg_init: float = 1e-7      # 초기 배경 노이즈 추정치
+    wavelength: float = 1.5406  # Cu K-alpha [Å]
+    beam_width: float = 0.1     # [mm]
+    res: float = 0.002          # dq resolution [Å^-1]
+    I0: float = 1.0             # Intensity scaling
+    Ibkg_init: float = 1e-7     # Initial background noise
 
+# 2. 데이터 증강 하이퍼파라미터
 class AugmentationConfig(BaseModel):
-    """학습 데이터 생성 시 적용할 변동성(Noise) 설정"""
     intensity_noise_scale: float = 0.2
-    bg_range: tuple[float, float] = (-8.0, -5.0)
-    res_sigma_range: tuple[float, float] = (0.0001, 0.005)
+    bg_range: Tuple[float, float] = (-9.0, -5.0)  # Log10 scale
+    res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
     q_shift_sigma: float = 0.001
     beam_profile: Literal['gaussian', 'square'] = 'gaussian'
 
-class XRefineConfig(BaseModel):
-    """전체 프로젝트 통합 설정 클래스"""
+# 3. 모델 아키텍처 설정
+class ModelArchConfig(BaseModel):
+    encoder_depth: int = 6
+    n_channels: int = 128
+    kernel_size: int = 15
+    dilation: int = 2
+    fourier_scale: float = 40.0
+    mapping_size: int = 64
+    hidden_dim: int = 1024
+    n_layers: int = 1
 
-    # --- 실험 및 저장 경로 ---
-    experiment_name: str = 'test2'
-    save_root: Path = Path(r'D:\03_Resources\Data\XRR_AI\PINN')
-    # save_root: Path = Path(r'C:\Warehouse\data\XRR_AI\PINN')
-    log_dir: Path = Path(r'logs')
-    # --- 물리적 측정 범위 (q-grid) ---
+# 4. 물리 파라미터 샘플링 범위 (Source of Truth for ParamSet)
+class PhysicalRangeConfig(BaseModel):
+    # Main Film
+    d_f: Tuple[float, float] = (10.0, 1000.0)
+    sig_f: Tuple[float, float] = (0.5, 20.0)
+    rho_f: Tuple[float, float] = (5.0, 100.0)
+    
+    # Oxide Layer
+    d_ox: Tuple[float, float] = (5.0, 50.0)
+    sig_ox: Tuple[float, float] = (0.5, 10.0)
+    rho_ox: Tuple[float, float] = (14.0, 20.0)
+    
+    # Instrumental
+    L: Tuple[float, float] = (9.0, 15.0)
+    beam_width: Tuple[float, float] = (0.01, 0.3)
+    bkg: Tuple[float, float] = (-9.0, -5.0)
+    i0: Tuple[float, float] = (0.8, 1.2)
+    
+    substrate_sld: float = 20.1  # Fixed [10^-6 Å^-2]
+
+# 5. 파라미터별 손실 함수 가중치
+class WeightConfig(BaseModel):
+    d_f: float = 1.0
+    sig_f: float = 1.0
+    rho_f: float = 1.0
+    d_ox: float = 0.5
+    sig_ox: float = 0.5
+    rho_ox: float = 0.5
+    L: float = 5.0
+    i0: float = 1.0
+    bkg: float = 1.0
+    beam_width: float = 10.0
+
+# 6. 학습 프로세스 하이퍼파라미터
+class TrainingConfig(BaseModel):
+    # 기초 하이퍼파라미터
+    batch_size: int = 64
+    lr: float = 5e-4
+    weight_decay: float = 1e-4
+    epochs: int = 300
+    steps_per_epoch: int = 100
+    warmup_steps: int = 1000
+    
+    # Curriculum Learning & Physics Loss 제어
+    sup_w_start: float = 100.0    # 초기 파라미터 지도 학습 가중치
+    sup_w_end: float = 2000.0     # 최종 파라미터 지도 학습 가중치
+    phys_penalty_w: float = 10.0  # 물리적 제약 조건(Penalty) 가중치
+    
+    # 파라미터별 개별 가중치 통합
+    weights: WeightConfig = Field(default_factory=WeightConfig)
+
+# 7. 프로젝트 통합 설정 (Root Config)
+class XRefineConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
+
+    # 경로 및 환경
+    experiment_name: str = 'XRefine_v1'
+    save_root: Path = Path(r"C:\Warehouse\data\XRR_AI\PINN")
+    log_dir: Path = Path("./logs")
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # 측정 그리드 설정
     q_min_tth: float = 0.05
     q_max_tth: float = 12.0
     q_len: int = 2000
 
-    # --- [Film] 메인 타겟 박막 범위 ---
-    thick_range: tuple[float, float] = (10.0, 1000.0)
-    rough_range: tuple[float, float] = (0.5, 20.0)
-    sld_range: tuple[float, float] = (5.0, 100.0)
-
-    # --- [SiO2] 하부 산화막 범위 (통일성을 위해 명시) ---
-    sio2_thick_range: tuple[float, float] = (5.0, 50.0)
-    sio2_rough_range: tuple[float, float] = (0.5, 10.0)
-    sio2_sld_range: tuple[float, float] = (14, 20)
-
-    sample_len_range: tuple[float, float] = (9.0, 11.0)  # mm
-    beam_width_range: tuple[float, float] = (0.01, 0.3)  # mm
-    substrate_sld: float = 20.1  # Si Substrate 고정
-
-    # --- 서브 설정 객체 ---
+    # 서브 설정 객체들
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
+    ranges: PhysicalRangeConfig = Field(default_factory=PhysicalRangeConfig)
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
+    train: TrainingConfig = Field(default_factory=TrainingConfig)
+    model: ModelArchConfig = Field(default_factory=ModelArchConfig)
 
-    # --- 학습 파라미터 (Curriculum Learning) ---
-    batch_size: int = 50
-    lr: float = 5e-4
-    train_steps: int = 10000
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # 하이브리드 가중치 (Warmup)
-    sup_w_start: float = 1000.0
-    sup_w_end: float = 5000
-    warmup_steps: int = 5000
-    sld_weight_factor: float = 3.0
-    phys_penalty_w: float = 3
-    supervise_weight_params: ParamSet = {
-        "d_f": 1.0,
-        "sig_f": 1.0,
-        "rho_f": 1.0,
-        "d_ox": 1.0,
-        "sig_ox": 1.0,
-        "rho_ox": 1.0,
-        "i0": 1.0,
-        "bkg": 1.0,
-        "L": 5.0,
-        "beam_width": 20.0
-    }
-    # --- 모델 아키텍처 설정 ---
-    n_layers: int = 1
-    fourier_scale: float = 40.0
-    hidden_dim: int = 512
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    # --- 런타임 계산 속성 (Serialization 무시) ---
     @property
     def q_grid(self) -> torch.Tensor:
         q_start = tth2q(self.q_min_tth, self.instrument.wavelength)
         q_end = tth2q(self.q_max_tth, self.instrument.wavelength)
         return torch.linspace(q_start, q_end, self.q_len)
 
-    # --- YAML 저장 및 로드 기능 ---
+    def get_weight_set(self, device: str = 'cpu') -> ParamSet:
+        """학습 시 ParamSet 형태로 가중치를 즉시 활용하기 위한 팩토리 메서드"""
+        w = self.train.weights
+        return ParamSet(
+            **{k: torch.tensor(v, device=device) for k, v in w.model_dump().items()}
+        )
+
     def save_yaml(self, path: str | Path):
-        with open(path, 'w') as f:
-            yaml.dump(self.model_dump(), f, sort_keys=False)
+        """현재 설정을 YAML로 직렬화하여 저장"""
+        save_path = Path(path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, 'w', encoding='utf-8') as f:
+            yaml.dump(self.model_dump(mode='json'), f, sort_keys=False)
 
     @classmethod
-    def load_yaml(cls, path: str | Path) -> 'XRefineConfig':
-        with open(path, 'r') as f:
+    def load_yaml(cls, path: str | Path) -> Self:
+        """YAML 파일로부터 설정 복원"""
+        with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
         return cls(**data)
-    
-    def get_range(self, key: str) -> tuple[float, float]:
-        """파라미터 이름을 입력받아 해당 범위를 반환"""
-        mapping = {
-            "d_f": self.thick_range,
-            "sig_f": self.rough_range,
-            "rho_f": self.sld_range,
-            "d_ox": self.sio2_thick_range,
-            "sig_ox": self.sio2_rough_range,
-            "rho_ox": self.sio2_sld_range,
-            "L": self.sample_len_range,
-            "beam_width": self.beam_width_range,
-            "bkg": self.augmentations.bg_range,
-            "i0": (1 - self.augmentations.intensity_noise_scale, 
-                   1 + self.augmentations.intensity_noise_scale)
-        }
-        
-        if key in mapping:
-            return mapping[key]
-        
-        # 기본값 (에러 방지용)
-        return (0.0, 1.0)
 
-
+# 전역 설정 인스턴스
 CONFIG = XRefineConfig()

@@ -9,6 +9,9 @@ def abeles(
     thickness: Tensor,
     roughness: Tensor,
     sld: Tensor,
+    sample_length: torch.Tensor,
+    beam_width: torch.Tensor,
+    wavelength: float = 1.5406
 ) -> Tensor:
     """
     고속 배치를 위한 최적화된 Abeles Matrix Method.
@@ -18,6 +21,14 @@ def abeles(
     2. 수치 안정성: k_z가 0에 가까울 때 발생하는 NaN 방지.
     3. 메모리 레이아웃: broadcasting 최적화를 통한 불필요한 복사 방지.
     """
+    
+    # 1. 모든 입력을 FP32로 강제 캐스팅 (ComplexHalf 방지 및 정밀도 확보)
+    # 정밀도가 매우 중요하다면 .double()을 권장합니다.
+    q = q.float() 
+    thickness = thickness.float()
+    roughness = roughness.float()
+    sld = sld.float()
+
     # 1. 초기 타입 및 디바이스 설정
     device = q.device
     c_dtype = torch.complex128 if q.dtype is torch.float64 else torch.complex64
@@ -72,10 +83,6 @@ def abeles(
     m_11 = exp_m_beta
 
     # 8. 행렬 누적 곱 (Matrix Chain Multiplication)
-    # 레이어 수가 적을 때는 루프가 유리할 수 있으나, 
-    # 레이어 수가 많아지면 아래 루프를 최적화하거나 전용 CUDA 커널이 필요함.
-    # 여기서는 Python 리스트 생성을 최소화하여 최적화.
-    
     m_accum_00 = m_00[..., 0]
     m_accum_01 = m_01[..., 0]
     m_accum_10 = m_10[..., 0]
@@ -96,6 +103,18 @@ def abeles(
 
     # 9. Reflectivity 산출
     # R = |M10 / M00|^2
-    reflectivity = (m_accum_10 / (m_accum_00 + 1e-36)).abs() ** 2
+    reflectivity = (m_accum_10 / (m_accum_00)).abs() ** 2
     
-    return torch.clamp(reflectivity, 0.0, 1.0)
+    sin_alpha = torch.clamp(q * wavelength / (4.0 * math.pi), -1.0, 1.0)
+    
+    # Gaussian Sigma (FWHM to Sigma)
+    # sqrt(8ln2) ≈ 2.3548
+    sigma_b = beam_width / 2.3548
+    
+    # erf( (L * sin_alpha) / (2 * sqrt(2) * sigma_b) )
+    # 2 * sqrt(2) ≈ 2.8284
+    arg = (sample_length * sin_alpha) / (2.8284 * sigma_b + 1e-9)
+    footprint_factor = torch.erf(arg)
+    
+    # 풋프린트가 적용된 최종 반사율 반환
+    return torch.clamp(reflectivity * footprint_factor, min=1e-11, max=1.0)

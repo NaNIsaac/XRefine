@@ -1,6 +1,5 @@
-from dataclasses import dataclass, field
-from typing import Any, List, TypedDict
-from io import StringIO
+from dataclasses import dataclass, field, fields
+from typing import Any, List
 
 import torch
 from torch import Tensor
@@ -99,8 +98,8 @@ class Sample:
         """
         # Ensure CPU and python primitives
         if thickness.dim() > 1:
-             raise ValueError("from_tensor expects 1D tensors (single sample).")
-             
+            raise ValueError("from_tensor expects 1D tensors (single sample).")
+
         t = thickness.detach().cpu().numpy()
         r = roughness.detach().cpu().numpy()
         s = sld.detach().cpu().numpy()
@@ -151,44 +150,59 @@ class FitTarget:
     attr_name: str
     spec: FitParam
 
+@dataclass
+class ParamSet:
+    d_f: Tensor    = field(metadata={'mult': 'n', 'type': 'physics'})
+    sig_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
+    rho_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
+    d_ox: Tensor   = field(metadata={'mult': 1, 'type': 'physics'})
+    sig_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
+    rho_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
+    L: Tensor          = field(metadata={'mult': 1, 'type': 'instrument'})
+    i0: Tensor         = field(metadata={'mult': 1, 'type': 'instrument'})
+    bkg: Tensor        = field(metadata={'mult': 1, 'type': 'instrument'}) 
+    beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
 
-class ParamSet[T: (Tensor, float)](TypedDict):
-    """
-    XRR 분석에 필요한 모든 가변 변수 세트
-    """
-    # 1. Main Film
-    d_f: T    # (B, N)
-    sig_f: T  # (B, N)
-    rho_f: T  # (B, N)
+    @classmethod
+    def cat(cls, ps_list: list["ParamSet"]) -> "ParamSet":
+        """여러 조각의 ParamSet을 배치 차원(dim=0)으로 합침"""
+        merged = {}
+        for f in fields(cls):
+            tensors = [getattr(ps, f.name) for ps in ps_list]
+            merged[f.name] = torch.cat(tensors, dim=0)
+        return cls(**merged)
 
-    # 2. SiO2 Layer
-    d_ox: T   # (B, 1)
-    sig_ox: T # (B, 1)
-    rho_ox: T # (B, 1)
+    def __repr__(self) -> str:
+        class_name = self.__class__.__name__
+        items = []
+        limit = 4 # 이 값보다 배치가 크면 요약 출력
 
-    # 3. Instrumental Factors
-    L: T      # (B, 1) - Sample Length
-    i0: T     # (B, 1) - Intensity Scale
-    bkg: T    # (B, 1) - Background Log level
-    beam_width: T  # (B, 1) - Beam Width
+        for f in fields(self):
+            v = getattr(self, f.name)
+            match v:
+                case torch.Tensor():
+                    arr = v.detach().cpu().numpy()
+                    match arr.ndim:
+                        case 0:
+                            val = f"{arr.item():.4f}"
+                            if f.name == "bkg":
+                                val += f" (10^{arr.item():.2f})"
+                        case 1:
+                            val = f"[{', '.join(f'{x:.4f}' for x in arr)}]"
+                        case 2 if arr.shape[0] == 1:
+                            val = f"[{', '.join(f'{x:.4f}' for x in arr[0])}]"
+                        case 2 if arr.shape[0] > limit:
+                            # [Adaptive Repr] 앞 2개, 뒤 1개만 보여줌
+                            head = [f"S{i}: [{', '.join(f'{x:.2f}' for x in row)}]" for i, row in enumerate(arr[:2])]
+                            tail = [f"S{arr.shape[0]-1}: [{', '.join(f'{x:.2f}' for x in arr[-1])}]"]
+                            val = "\n      " + "\n      ".join(head + ["      ... (omitted)"] + tail)
+                        case 2:
+                            samples = [f"S{i}: [{', '.join(f'{x:.2f}' for x in row)}]" for i, row in enumerate(arr)]
+                            val = "\n      " + "\n      ".join(samples)
+                        case _:
+                            val = f"Tensor{list(arr.shape)}"
+                case _:
+                    val = str(v)
+            items.append(f"{f.name}={val}")
 
-
-def format_params(params: ParamSet, title: str = "Parameters") -> str:
-    """
-    match-case를 사용하여 ParamSet을 이쁜 문자열로 변환합니다.
-    """
-    output = StringIO()
-    output.write(f"[{title}]\n")
-    
-    for k, v in params.items():
-        match v:
-            case torch.Tensor() if v.numel() == 1:
-                output.write(f"  {k:12}: {v.item():.4f}\n")
-            case torch.Tensor():
-                output.write(f"  {k:12}: {v.detach().cpu().numpy().flatten()[:5]} (batch)\n")
-            case float():
-                output.write(f"  {k:12}: {v:.4f}\n")
-            case _:
-                output.write(f"  {k:12}: {str(v)}\n")
-
-    return output.getvalue()
+        return f"{class_name}(\n    " + ",\n    ".join(items) + "\n)"

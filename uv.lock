@@ -373,6 +373,18 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonargparse"
+version = "4.45.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/25/98/6a30ed2349c6a22a4401505022647542c6dbd952907a19c4dc797af70b98/jsonargparse-4.45.0.tar.gz", hash = "sha256:a082420a224c19843c396ac452a4dc7164d253688e0a6e4b7b01fabe81d72f4d", size = 219928, upload-time = "2025-12-26T14:27:50.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/63/aca864d4cd1bd03b4cec6ed9746c2c88807e590a54620a825610ffde56b3/jsonargparse-4.45.0-py3-none-any.whl", hash = "sha256:008211ef73065493e5526d2fd1d10ad5bf24801d6c95a55dfd94984a7dcd4f09", size = 243933, upload-time = "2025-12-26T14:27:48.416Z" },
+]
+
+[[package]]
 name = "kiwisolver"
 version = "1.4.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1557,6 +1569,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "genx3" },
+    { name = "jsonargparse" },
     { name = "lib-platform" },
     { name = "loguru" },
     { name = "matplotlib" },
@@ -1574,6 +1587,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "genx3" },
+    { name = "jsonargparse", specifier = ">=4.45.0" },
     { name = "lib-platform" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib" },
