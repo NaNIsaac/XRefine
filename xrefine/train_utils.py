@@ -13,15 +13,15 @@ plt.switch_backend('Agg')
 
 class XRRWeightedLoss(nn.Module):
     """
-    실전 데이터 대응형 XRR 손실 함수:
-    1. Dynamic Masking: 유효하지 않은 데이터(-10 이하)를 Loss 계산에서 제외.
-    2. Segmented Recon Loss: 저각도(Footprint)와 고각도 가중치 밸런싱.
-    3. Param Supervision: 정규화된 MSE와 파라미터별 가중치 적용.
+    물리 우선순위 대응형 커스텀 손실 함수:
+    1. Critical Angle (Qc): SLD(rho) 결정 1순위.
+    2. Fringe Gradient (Diff): 두께(d) 및 간섭 주기 결정 1순위.
+    3. Parameter Weighting: d, rho, sigma에 높은 가중치 부여.
     """
     def __init__(self, q_grid: torch.Tensor):
         super().__init__()
-        # 기본 고각도 감쇠 가중치 (Noise 과적합 방지)
-        weights = torch.exp(-2.0 * q_grid) 
+
+        weights = torch.full_like(q_grid, 1)
         self.register_buffer('q_weights', weights.unsqueeze(0))
         self.register_buffer('q_grid', q_grid.unsqueeze(0))
 
@@ -34,22 +34,31 @@ class XRRWeightedLoss(nn.Module):
                 curr_sup_w: float, 
                 phys_penalty: torch.Tensor):
         
-        # --- 1. Dynamic Masking (실전 데이터의 빈 부분 제외) ---
-        # -10 이하(예: 사용자가 넣은 -15)인 구간은 0, 나머지는 1로 마스킹
+        # --- 1. 전처리 및 마스킹 ---
         mask = (log_r_target > -10.0).float()
         valid_points = mask.sum() + 1e-9
-
-        # --- 2. Physics Reconstruction Loss (Log-scale) ---
         log_r_recon = torch.log10(torch.clamp(r_recon, min=1e-11))
-        
-        # Footprint 영역(Q < 0.1)에 추가 가중치 부여 (L, beam_width 수렴 지원)
-        footprint_boost = torch.where(self.q_grid < 0.1, 5.0, 1.0)
-        
-        recon_error = (log_r_recon - log_r_target)**2
-        # 마스크와 영역 가중치를 모두 적용하여 평균 산출
-        loss_recon = (recon_error * self.q_weights * footprint_boost * mask).sum() / valid_points
 
-        # --- 3. Parameter Supervision Loss (Normalized & Weighted) ---
+        # --- 2. [핵심] Critical Angle (Qc) Loss ---
+        # 전반사 임계각 영역(Q < 0.08)은 박막 밀도(rho)를 결정하는 1순위 지표입니다.
+        qc_mask = (self.q_grid < 0.08).float() * mask
+        loss_qc = torch.sum(qc_mask * (log_r_recon - log_r_target)**2) / (qc_mask.sum() + 1e-9)
+        loss_qc *= 15.0 # Qc 정합성 우선순위 반영 가중치
+
+        # --- 3. [핵심] Fringe Spacing (Diff) Loss ---
+        # 반사율의 미분값을 비교하면 주기가 틀렸을 때(두께 오류) 매우 민감하게 반응합니다. 
+        diff_recon = torch.diff(log_r_recon, dim=-1)
+        diff_target = torch.diff(log_r_target, dim=-1)
+        diff_mask = mask[:, 1:] # diff 연산으로 길이가 1 줄어듦
+        loss_fringe = torch.sum(diff_mask * (diff_recon - diff_target)**2) / (diff_mask.sum() + 1e-9)
+        loss_fringe *= 30.0 # 프린지 간격 일치 우선순위 반영 가중치
+
+        # --- 4. Base Reconstruction Loss ---
+        # 전체적인 최대값 및 경향성 일치
+        base_error = (log_r_recon - log_r_target)**2
+        loss_recon_base = (base_error * self.q_weights * mask).sum() / valid_points
+
+        # --- 5. Parameter Supervision (1순위 필드 강조) ---
         loss_param = 0
         w_set = config.get_weight_set(device=log_r_target.device)
 
@@ -57,20 +66,22 @@ class XRRWeightedLoss(nn.Module):
             key = fld.name
             pred_val = getattr(p_pred, key)
             true_val = getattr(p_true, key)
-            weight = getattr(w_set, key)
+            weight = getattr(w_set, key) # WeightConfig에서 d_f, rho_f 등 1순위 가중치 참조
 
             p_min, p_max = getattr(config.ranges, key)
-            
-            # 정규화된 MSE (0~1 scale-invariant)
             norm_pred = (pred_val - p_min) / (p_max - p_min + 1e-9)
             norm_true = (true_val - p_min) / (p_max - p_min + 1e-9)
             
-            loss_param += nn.functional.mse_loss(norm_pred, norm_true) * weight
+            # 1순위 파라미터(d, rho, sig)는 WeightConfig에서 이미 높은 값을 가짐
+            loss_param += F.mse_loss(norm_pred, norm_true) * weight
 
-        # 최종 통합 손실 (Recon + Param + Physics Penalty)
-        total_loss = loss_recon + (curr_sup_w * loss_param) + (config.train.phys_penalty_w * phys_penalty)
-        return total_loss, loss_recon, loss_param, phys_penalty
+        # --- 6. 최종 통합 ---
+        total_loss = (loss_recon_base + loss_qc + loss_fringe) + \
+                     (curr_sup_w * loss_param) + \
+                     (config.train.phys_penalty_w * phys_penalty)
 
+        # Trainer의 pbar 출력을 위해 개별 항목 반환
+        return total_loss, loss_recon_base, loss_fringe, loss_qc
 
 def plot_learning_curves(history: Dict[str, List[float]], save_path: str | Path):
     """전체 학습 과정의 Loss 추이 요약"""
