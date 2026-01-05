@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from xrefine.core.structures import ParamSet
@@ -12,16 +13,12 @@ from xrefine.config import XRefineConfig
 plt.switch_backend('Agg')
 
 class XRRWeightedLoss(nn.Module):
-    """
-    물리 우선순위 대응형 커스텀 손실 함수:
-    1. Critical Angle (Qc): SLD(rho) 결정 1순위.
-    2. Fringe Gradient (Diff): 두께(d) 및 간섭 주기 결정 1순위.
-    3. Parameter Weighting: d, rho, sigma에 높은 가중치 부여.
-    """
     def __init__(self, q_grid: torch.Tensor):
         super().__init__()
-
-        weights = torch.full_like(q_grid, 1)
+        # [사용자 제안 반영] 모든 Q 영역에 동일한 가중치(1.0) 부여
+        # 로그 스케일에서는 이미 스케일이 평탄화되어 있어 균등 가중치가 물리적으로 타당함
+        weights = torch.full_like(q_grid, 1.0)
+        
         self.register_buffer('q_weights', weights.unsqueeze(0))
         self.register_buffer('q_grid', q_grid.unsqueeze(0))
 
@@ -34,53 +31,43 @@ class XRRWeightedLoss(nn.Module):
                 curr_sup_w: float, 
                 phys_penalty: torch.Tensor):
         
-        # --- 1. 전처리 및 마스킹 ---
+        # 1. 마스킹 및 전처리
         mask = (log_r_target > -10.0).float()
         valid_points = mask.sum() + 1e-9
         log_r_recon = torch.log10(torch.clamp(r_recon, min=1e-11))
 
-        # --- 2. [핵심] Critical Angle (Qc) Loss ---
-        # 전반사 임계각 영역(Q < 0.08)은 박막 밀도(rho)를 결정하는 1순위 지표입니다.
+        # 2. 크리티컬 엥글(Qc) 영역 보강 - SLD(rho) 결정 1순위
+        # 균등 가중치 상태에서 Qc 영역(Q < 0.08)만 명시적으로 강조
         qc_mask = (self.q_grid < 0.08).float() * mask
         loss_qc = torch.sum(qc_mask * (log_r_recon - log_r_target)**2) / (qc_mask.sum() + 1e-9)
-        loss_qc *= 15.0 # Qc 정합성 우선순위 반영 가중치
 
-        # --- 3. [핵심] Fringe Spacing (Diff) Loss ---
-        # 반사율의 미분값을 비교하면 주기가 틀렸을 때(두께 오류) 매우 민감하게 반응합니다. 
+        # 3. 프린지 간격(Diff) 보강 - 두께(d) 결정 1순위
+        # 모든 영역의 가중치가 1.0이므로 고각도 프린지 미분값이 손실에 온전히 반영됨
         diff_recon = torch.diff(log_r_recon, dim=-1)
         diff_target = torch.diff(log_r_target, dim=-1)
-        diff_mask = mask[:, 1:] # diff 연산으로 길이가 1 줄어듦
+        diff_mask = mask[:, 1:]
         loss_fringe = torch.sum(diff_mask * (diff_recon - diff_target)**2) / (diff_mask.sum() + 1e-9)
-        loss_fringe *= 30.0 # 프린지 간격 일치 우선순위 반영 가중치
 
-        # --- 4. Base Reconstruction Loss ---
-        # 전체적인 최대값 및 경향성 일치
+        # 4. 베이스 재구성 손실 (균등 가중치 적용)
         base_error = (log_r_recon - log_r_target)**2
         loss_recon_base = (base_error * self.q_weights * mask).sum() / valid_points
 
-        # --- 5. Parameter Supervision (1순위 필드 강조) ---
+        # 5. 파라미터 지도 학습 (d_f, rho_f, sig_f 등 1순위 강조)
         loss_param = 0
         w_set = config.get_weight_set(device=log_r_target.device)
-
         for fld in fields(ParamSet):
             key = fld.name
-            pred_val = getattr(p_pred, key)
-            true_val = getattr(p_true, key)
-            weight = getattr(w_set, key) # WeightConfig에서 d_f, rho_f 등 1순위 가중치 참조
-
             p_min, p_max = getattr(config.ranges, key)
-            norm_pred = (pred_val - p_min) / (p_max - p_min + 1e-9)
-            norm_true = (true_val - p_min) / (p_max - p_min + 1e-9)
-            
-            # 1순위 파라미터(d, rho, sig)는 WeightConfig에서 이미 높은 값을 가짐
-            loss_param += F.mse_loss(norm_pred, norm_true) * weight
+            # 0~1 사이로 정규화하여 MSE 계산
+            norm_pred = (getattr(p_pred, key) - p_min) / (p_max - p_min + 1e-9)
+            norm_true = (getattr(p_true, key) - p_min) / (p_max - p_min + 1e-9)
+            loss_param += F.mse_loss(norm_pred, norm_true) * getattr(w_set, key)
 
-        # --- 6. 최종 통합 ---
-        total_loss = (loss_recon_base + loss_qc + loss_fringe) + \
+        # 6. 최종 통합 (우선순위 가중치: Fringe(30) > Qc(15) > Base(1))
+        total_loss = (loss_recon_base + 15.0 * loss_qc + 30.0 * loss_fringe) + \
                      (curr_sup_w * loss_param) + \
                      (config.train.phys_penalty_w * phys_penalty)
 
-        # Trainer의 pbar 출력을 위해 개별 항목 반환
         return total_loss, loss_recon_base, loss_fringe, loss_qc
 
 def plot_learning_curves(history: Dict[str, List[float]], save_path: str | Path):
