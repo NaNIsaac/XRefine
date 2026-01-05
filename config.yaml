@@ -42,12 +42,12 @@ augmentations:
 # [Training Hyperparameters]
 train:
   batch_size: 64
-  lr: 1e-4
+  lr: 0.0005177043421596389
   epochs: 300
   steps_per_epoch: 100
   sup_w_start: 10000.0
   sup_w_end: 2000.0
-  phys_penalty_w: 5
+  phys_penalty_w: 0.8578632881974889
 
   weights:
     d_f: 2.0
@@ -67,7 +67,7 @@ model:
   n_channels: 128
   kernel_size: 21
   dilation: 2
-  fourier_scale: 400
+  fourier_scale: 42.99665209061587
   mapping_size: 64
   hidden_dim: 1024
   n_layers: 1
