@@ -19,6 +19,7 @@ dependencies = [
     "tensorboard>=2.20.0",
     "typer>=0.21.0",
     "jsonargparse>=4.45.0",
+    "optuna>=4.6.0",
 ]
 
 [[tool.uv.index]]

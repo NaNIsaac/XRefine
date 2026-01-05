@@ -186,12 +186,12 @@ class ParamSet:
             for f in fields(self)
         })
 
-    def to(self, device: torch.device | str) -> "ParamSet":
-        """모든 텐서를 지정된 장치로 이동"""
-        return ParamSet(**{
-            f.name: getattr(self, f.name).to(device) 
-            for f in fields(self)
-        })
+    def to(self, device):
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if isinstance(v, torch.Tensor):
+                setattr(self, f.name, v.to(device))
+        return self
 
     def __repr__(self) -> str:
         class_name = self.__class__.__name__

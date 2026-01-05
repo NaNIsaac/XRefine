@@ -1,9 +1,11 @@
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from pathlib import Path
-from typing import Optional
 
 from xrefine.config import CONFIG, XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
@@ -65,50 +67,75 @@ class XRefineTrainer:
         self.model.train()
         total_loss = 0
         steps = self.cfg.train.steps_per_epoch
-        
         pbar = tqdm(range(steps), desc=f"Epoch {epoch:03d}", leave=False)
         
         for step in pbar:
-            # 1. 데이터 생성 및 전처리
+            # 1. 데이터 생성 (CPU에서 생성됨)
             r_meas, p_true = generate_synthetic_batch(
-                batch_size=self.cfg.train.batch_size, 
-                q_grid=self.q_grid, 
-                config=self.cfg, 
+                q_grid=self.cfg.q_grid,
+                batch_size=self.cfg.train.batch_size,
+                config=self.cfg,
                 augmenter=self.augmenter
             )
-            log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             
+            # [수정 포인트] 데이터를 모델이 있는 장치(GPU)로 이동시켜야 합니다!
+            r_meas = r_meas.to(self.device)
+            p_true = p_true.to(self.device) # ParamSet의 .to() 메서드 활용
+            
+            log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             self.optimizer.zero_grad(set_to_none=True)
             
-            # 2. Forward & Loss 계산
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
+                # 이제 log_r_obs가 GPU에 있으므로 fourier 연산(@ self.B)이 가능해집니다.
                 p_pred, r_recon, phys_penalty = self.model(log_r_obs)
-                loss, l_recon, l_param, p_phys = self.criterion(
+                loss, _, _, _ = self.criterion(
                     p_pred, r_recon, log_r_obs, p_true, 
                     self.cfg, curr_sup_w, phys_penalty
                 )
 
+            if not torch.isfinite(loss): # [Best Practice]
+                return float('nan')
+
             if self.scaler:
-                self.scaler.scale(loss).backward()
+                # [필수!] step()을 부르기 전에 반드시 scale()과 backward()가 먼저 와야 합니다.
+                self.scaler.scale(loss).backward() 
+                
+                # 가중치 클리핑을 위해 unscale 먼저 수행
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 
+                # 이제 안전하게 step() 호출
+                current_scale = self.scaler.get_scale()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.scheduler.step()
+                
+                # 스케줄러 경고 방지 로직 (사용자님이 추가하신 부분)
+                skip_lr_sched = current_scale > self.scaler.get_scale()
+                if not skip_lr_sched:
+                    self.scheduler.step()
             else:
+                # 일반적인 float32 학습 시
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                
                 self.optimizer.step()
                 self.scheduler.step()
 
-            current_loss = loss.item()
-            total_loss += current_loss
+            total_loss += loss.item()
             if step % 10 == 0:
-                pbar.set_postfix({"L": f"{current_loss:.4f}", "LR": f"{self.scheduler.get_last_lr()[0]:.2e}"})
+                pbar.set_postfix({"L": f"{loss.item():.4f}", "LR": f"{self.scheduler.get_last_lr()[0]:.2e}"})
                 
         return total_loss / steps
+
+    @torch.no_grad()
+    def validate_epoch(self, epoch: int):
+        self.model.eval()
+        losses = [
+            self.criterion(*self.model(torch.log10(generate_synthetic_batch(q_grid=self.cfg.q_grid, batch_size=self.cfg.train.batch_size, config=self.cfg)[0])), 
+            torch.log10(generate_synthetic_batch(q_grid=self.cfg.q_grid, batch_size=self.cfg.train.batch_size, config=self.cfg)[0]), 
+            generate_synthetic_batch(q_grid=self.cfg.q_grid, batch_size=self.cfg.train.batch_size, config=self.cfg)[1], self.cfg, 1.0, 0)[0].item() 
+            for _ in range(5)
+        ]
+        return np.mean(losses)
 
     @torch.no_grad()
     def validate(self, curr_sup_w: float):
@@ -119,12 +146,13 @@ class XRefineTrainer:
             config=self.cfg, 
             augmenter=self.augmenter
         )
+        # 데이터를 GPU로 이동
+        r_meas = r_meas.to(self.device)
+        p_true = p_true.to(self.device)
+        
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
         p_pred, r_recon, phys_penalty = self.model(log_r_obs)
-        loss, _, _, _ = self.criterion(
-            p_pred, r_recon, log_r_obs, p_true, 
-            self.cfg, curr_sup_w, phys_penalty
-        )
+        loss, _, _, _ = self.criterion(p_pred, r_recon, log_r_obs, p_true, self.cfg, curr_sup_w, phys_penalty)
         return loss.item(), p_pred, r_recon
 
     def fit(self, resume: bool = False):
