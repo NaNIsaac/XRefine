@@ -1,6 +1,6 @@
 # [General Settings]
-experiment_name: "XRefine_v1_PINN"
-save_root: "C:/Warehouse/data/XRR_AI/experiments"
+experiment_name: "v2"
+save_root: "D:\\Members\\IsaacYong\\Data\\XRR_AI"
 log_dir: "logs"
 device: "cuda"
 
@@ -50,16 +50,16 @@ train:
   phys_penalty_w: 0.8578632881974889
 
   weights:
-    d_f: 2.0
-    sig_f: 1.0
-    rho_f: 1.0
+    d_f: 3.0
+    sig_f: 3.0
+    rho_f: 3.0
     d_ox: 2
     sig_ox: 1
     rho_ox: 2
     i0: 3.0
     bkg: 1.0
-    L: 5.0
-    beam_width: 5
+    L: 2.0
+    beam_width: 2
 
 # [Model Architecture]
 model:
