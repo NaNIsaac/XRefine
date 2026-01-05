@@ -137,6 +137,6 @@ def run_real_inference(checkpoint_path: str, data_path: str, refine: bool = True
     plt.show()
 
 if __name__ == "__main__":
-    CHECKPOINT = r"C:\Warehouse\data\XRR_AI\experiments\sandbox_v7\best.pt"
-    DATA_FILE = r"C:\Warehouse\data\dat_files\jinhuan\#2_xrr.dat"
+    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\PINN\v1\best.pt"
+    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data2\#2.dat"
     run_real_inference(CHECKPOINT, DATA_FILE, refine=True)

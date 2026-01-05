@@ -40,15 +40,17 @@ class XRRPhysicsModel(nn.Module):
         curr_dim = enc_in_channels
         for i in range(config.model.encoder_depth):
             out_dim = config.model.n_channels * (2 ** min(i // 2, 2))
+            current_dilation = 2**i
+            kernel_size = config.model.kernel_size
             layers.append(nn.Sequential(
                 nn.Conv1d(curr_dim, out_dim, 
-                    kernel_size=config.model.kernel_size, 
-                    padding=((config.model.kernel_size-1) * config.model.dilation) // 2,
-                    dilation=config.model.dilation,
+                    kernel_size=kernel_size, 
+                    padding=((kernel_size - 1) * current_dilation) // 2,
+                    dilation=current_dilation,
                     bias=False),
                 nn.BatchNorm1d(out_dim),
                 nn.LeakyReLU(0.2, inplace=True),
-                nn.MaxPool1d(2)
+                nn.MaxPool1d(2) 
             ))
             curr_dim = out_dim
 
