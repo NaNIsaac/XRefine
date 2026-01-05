@@ -3,6 +3,7 @@ from dataclasses import fields
 
 import torch
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from xrefine.config import XRefineConfig
@@ -11,21 +12,32 @@ from xrefine.physics_utils import tth2q
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
 
+
 def load_real_data(file_path: str, config: XRefineConfig, mask_val: float = -15.0):
-    """실전 데이터를 로드하고 모델 그리드에 맞춰 마스킹 수행"""
-    data = np.loadtxt(file_path)
+    # 1. Pandas로 일단 모든 데이터를 문자열로 읽어옵니다.
+    # sep=None, engine='python'을 쓰면 공백/탭을 자동으로 구분합니다.
+    df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
+
+    # 2. 모든 셀에서 ( ) 제거 및 float 변환 (벡터 연산으로 매우 빠름)
+    for col in df.columns:
+        df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
+
+    data = df.values
     x_raw, y_raw = data[:, 0], data[:, 1]
     
+    # 3. 물리 연산 (2theta -> Q)
     x_raw = tth2q(x_raw, config.instrument.wavelength)
 
-    q_min_meas, q_max_meas = x_raw.min(), x_raw.max()
+    # 4. 정규화 및 로그 변환
     y_norm = y_raw / (y_raw.max() + 1e-12)
     log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
 
-    q_target = config.q_grid.numpy()
+    # 5. 모델 그리드에 맞게 보간 (Interpolation)
+    q_target = config.q_grid.numpy() #
     log_y_interp = np.interp(q_target, x_raw, log_y_raw)
 
-    # 범위 밖 마스킹
+    # 6. 범위 밖 마스킹
+    q_min_meas, q_max_meas = x_raw.min(), x_raw.max()
     out_of_range = (q_target < q_min_meas) | (q_target > q_max_meas)
     log_y_interp[out_of_range] = mask_val
     
@@ -137,6 +149,6 @@ def run_real_inference(checkpoint_path: str, data_path: str, refine: bool = True
     plt.show()
 
 if __name__ == "__main__":
-    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\PINN\v1\best.pt"
-    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data2\#2.dat"
+    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\PINN\v2\best.pt"
+    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data2\#4.dat"
     run_real_inference(CHECKPOINT, DATA_FILE, refine=True)
