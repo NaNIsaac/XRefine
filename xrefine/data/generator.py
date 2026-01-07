@@ -74,7 +74,7 @@ def generate_synthetic_batch(
         q_batch, thickness, roughness, sld_full,
         sample_length=params_gt.L,
         beam_width=params_gt.beam_width,
-        dq=torch.tensor([[config.instrument.res]], device=device)
+        dq=params_gt.dq
     )
 
     # --- Step 4. 통합 증강 (ParamSet 주입 및 보정) ---

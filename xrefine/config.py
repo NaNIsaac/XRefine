@@ -51,6 +51,8 @@ class PhysicalRangeConfig(BaseModel):
     beam_width: Tuple[float, float] = (0.01, 0.3)
     bkg: Tuple[float, float] = (-9.0, -5.0)
     i0: Tuple[float, float] = (0.8, 1.2)
+    dq: Tuple[float, float] = (0.0005, 0.01)  # Resolution [Å⁻¹]
+    tth_offset: Tuple[float, float] = (-0.05, 0.05)  # 2θ offset [°]
     
     substrate_sld: float = 20.1  # Fixed [10^-6 Å^-2]
 
@@ -66,6 +68,8 @@ class WeightConfig(BaseModel):
     i0: float = 1.0
     bkg: float = 1.0
     beam_width: float = 10.0
+    dq: float = 1.0
+    tth_offset: float = 5.0  # Offset is critical for low-q
 
 # 6. 학습 프로세스 하이퍼파라미터
 class TrainingConfig(BaseModel):
@@ -90,7 +94,7 @@ class XRefineConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
 
     # 경로 및 환경
-    experiment_name: str = 'XRefine_v1'
+    experiment_name: str = 'XRefine_v2_Calibrated'
     save_root: Path = Path(r"C:\Warehouse\data\XRR_AI\PINN")
     log_dir: Path = Path("./logs")
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'

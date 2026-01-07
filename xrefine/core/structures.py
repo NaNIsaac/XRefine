@@ -163,6 +163,8 @@ class ParamSet:
     i0: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
     bkg: Tensor = field(metadata={'mult': 1, 'type': 'instrument'}) 
     beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
+    dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # Resolution [Å⁻¹]
+    tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # 2θ offset [°]
 
     def keys(self) -> Iterator[str]:
         """필드 이름들에 대한 iterator 반환"""

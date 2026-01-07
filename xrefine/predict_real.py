@@ -57,7 +57,7 @@ def three_stage_refinement(model, p_ai: ParamSet, log_r_obs: torch.Tensor, confi
     """
     
     FOOTPRINT_PARAMS = {'L', 'beam_width'}
-    OTHER_INSTRUMENTAL = {'bkg'}
+    OTHER_INSTRUMENTAL = {'bkg', 'dq', 'tth_offset'}
     PHYSICS_PARAMS = {'d_f', 'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox'}
     FIXED_PARAMS = {'i0': 1.0}
     
@@ -299,6 +299,6 @@ def _save_plot(config, y_meas_log, r_ai, r_ref, title, r2, save_path):
 
 
 if __name__ == "__main__":
-    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\PINN\v3\best.pt"
+    CHECKPOINT = r"D:\02_Projects\Dev\X-ray_AI\XRefine\checkpoints_test\TestRun\best.pt"
     DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data2\#4.dat"
     run_real_inference(CHECKPOINT, DATA_FILE)

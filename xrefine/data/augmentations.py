@@ -63,9 +63,11 @@ class XRRAugmentor(nn.Module):
         R = torch.nan_to_num(R, nan=1e-11, posinf=1.0, neginf=1e-11)
 
         # 1. Resolution Smearing (가변 분해능)
-        low, high = self.aug_cfg.res_sigma_range
-        res_sig = torch.rand(B, 1, device=device) * (high - low) + low
-        R_aug = self.apply_smearing(R, res_sig)
+        # 1. Resolution Smearing (Disabled - Handled by Simulator with params.dq)
+        # low, high = self.aug_cfg.res_sigma_range
+        # res_sig = torch.rand(B, 1, device=device) * (high - low) + low
+        # R_aug = self.apply_smearing(R, res_sig)
+        R_aug = R
         
         # 2. Q-Shift (정렬 오차 모사)
         if self.aug_cfg.q_shift_sigma > 0:

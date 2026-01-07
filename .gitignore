@@ -14,3 +14,4 @@ experiments/
 *.png
 logs/
 results/
+checkpoints_test/

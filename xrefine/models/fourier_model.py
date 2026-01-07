@@ -136,7 +136,7 @@ class XRR_Fourier_PINN(nn.Module):
             
         # 1. AI 추론 (이미 r_obs_log가 GPU에 있으므로 out도 GPU)
         out = self.encoder(r_obs_log)
-        params = self._unnormalize(out)
+        params = self._unnormalize(out.float()) # Force float32 for physics
         
 
         batch_size = out.size(0)
@@ -151,10 +151,18 @@ class XRR_Fourier_PINN(nn.Module):
             sub = torch.full((batch_size, 1), self.config.ranges.substrate_sld, device=self.device)
             sld_full = torch.cat([amb, params.rho_f, params.rho_ox, sub], dim=-1)
 
-            # B. [중요] q_grid와 dq 장치 고정
-            # self.q_grid가 buffer일지라도 .to(curr_device)를 명시하는 것이 가장 안전합니다.
+            # B. [중요] q_grid 장치 고정 + tth_offset 적용
             q_batch = self.q_grid.to(self.device).unsqueeze(0).expand(batch_size, -1)
-            dq = torch.tensor([[self.config.instrument.res]], device=self.device)
+            
+            # tth_offset: 2θ 오프셋 → q 스케일 변환 적용
+            # q = 4π/λ * sin(θ), dq/dθ ≈ 4π/λ * cos(θ) ≈ 4π/λ (small angles)
+            # For small offsets: Δq ≈ (4π/λ) * (Δ2θ/2) * (π/180)
+            tth_offset_rad = params.tth_offset.to(self.device) * (3.14159 / 180.0) / 2.0
+            q_offset = (4 * 3.14159 / self.config.instrument.wavelength) * torch.sin(tth_offset_rad)
+            q_batch = q_batch + q_offset  # Apply offset
+            
+            # dq: params에서 가져옴
+            dq = params.dq.to(self.device)
 
             # C. 시뮬레이터 실행
             r_sim = self.simulator(
@@ -193,7 +201,14 @@ class XRR_Fourier_PINN(nn.Module):
         
         # 3. 시뮬레이션 (forward와 동일한 시그니처 사용)
         q_batch = self.q_grid.unsqueeze(0).expand(thickness.size(0), -1).to(device)
-        dq = torch.tensor([[self.config.instrument.res]], device=device)
+        
+        # tth_offset: 2θ 오프셋 → q 스케일 변환 적용
+        tth_offset_rad = params.tth_offset.to(device) * (3.14159 / 180.0) / 2.0
+        q_offset = (4 * 3.14159 / self.config.instrument.wavelength) * torch.sin(tth_offset_rad)
+        q_batch = q_batch + q_offset
+        
+        # dq: ParamSet에서 가져옴
+        dq = params.dq.to(device)
         
         r_sim = self.simulator(
             q_batch, 

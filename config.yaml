@@ -1,6 +1,6 @@
 # [General Settings]
-experiment_name: "v3"
-save_root: "D:\\Members\\IsaacYong\\Data\\XRR_AI"
+experiment_name: "v1"
+save_root: "D:\\03_Resources\\Data\\PINN"
 log_dir: "logs"
 device: "cuda"
 
