@@ -28,29 +28,27 @@ def objective(trial: optuna.Trial):
 
     # --- Hyperparameter Search Space ---
     
-    # 1. Model Architecture
+    # 1. New Exploration: Model Architecture (Concentrate here)
     enc_depth = trial.suggest_int("enc_depth", 4, 8, step=2)
     n_channels = trial.suggest_categorical("n_channels", [64, 128, 256])
-    kernel_size = trial.suggest_int("kernel_size", 15, 31, step=2) # 기존 21 고려하여 상향
+    kernel_size = trial.suggest_int("kernel_size", 15, 31, step=2)
     hidden_dim = trial.suggest_categorical("hidden_dim", [512, 1024])
-    f_scale = trial.suggest_float("f_scale", 20.0, 80.0) # 기존 42.9 포함
+    
+    # [LOCKED] Previously Optimized Params (Using values from config.yaml)
+    # f_scale = 43.0, lr = 5e-4, phys_penalty_w = 0.86
+    # We trust these values and focus computing power on architecture.
 
     base_cfg.model.encoder_depth = enc_depth
     base_cfg.model.n_channels = n_channels
     base_cfg.model.kernel_size = kernel_size
     base_cfg.model.hidden_dim = hidden_dim
-    base_cfg.model.fourier_scale = f_scale
 
     # 2. Training Dynamics
-    lr = trial.suggest_float("lr", 1e-4, 2e-3, log=True) # 기존 5e-4 포함
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
-    sup_w_end = trial.suggest_float("sup_w_end", 1000.0, 10000.0, log=True) # 기존 2000 포함
-    phys_penalty_w = trial.suggest_float("phys_penalty_w", 0.1, 10.0, log=True) # 기존 0.85 포함
-
-    base_cfg.train.lr = lr
+    sup_w_end = trial.suggest_float("sup_w_end", 1000.0, 5000.0, log=True)
+    
     base_cfg.train.batch_size = batch_size
     base_cfg.train.sup_w_end = sup_w_end
-    base_cfg.train.phys_penalty_w = phys_penalty_w
     
     # 3. Augmentation
     intensity_noise = trial.suggest_float("intensity_noise", 0.05, 0.4)
@@ -58,7 +56,7 @@ def objective(trial: optuna.Trial):
 
     # Experiment Setup
     base_cfg.experiment_name = f"hpo_{trial.number}"
-    base_cfg.train.epochs = 12  # 빠른 탐색을 위해 에폭 제한
+    base_cfg.train.epochs = 15  # 에폭 약간 증가
     
     # 모델 및 트레이너 초기화
     model = XRR_Fourier_PINN(base_cfg)
@@ -117,38 +115,36 @@ if __name__ == "__main__":
             logger.info("🛑 Optimization paused by user.")
 
     print("\n" + "="*60)
-    print(f"🏆 BEST (Param MAE): {study.best_value:.6f}")
-    print("Params:", study.best_params)
-    
-    # Best Config 저장
-    best_params = study.best_params
-    print("💾 Saving best configuration to 'best_hpo_config.yaml'...")
-    
-    if YAML_PATH.exists():
-        best_cfg = XRefineConfig.load_yaml(YAML_PATH)
-    else:
-        from xrefine.config import CONFIG
-        best_cfg = CONFIG.model_copy(deep=True)
+    try:
+        print(f"🏆 BEST (Param MAE): {study.best_value:.6f}")
+        print("Params:", study.best_params)
         
-    # Apply Best Params
-    # Model
-    best_cfg.model.encoder_depth = best_params.get("enc_depth", best_cfg.model.encoder_depth)
-    best_cfg.model.n_channels = best_params.get("n_channels", best_cfg.model.n_channels)
-    best_cfg.model.kernel_size = best_params.get("kernel_size", best_cfg.model.kernel_size)
-    best_cfg.model.hidden_dim = best_params.get("hidden_dim", best_cfg.model.hidden_dim)
-    best_cfg.model.fourier_scale = best_params.get("f_scale", best_cfg.model.fourier_scale)
-    
-    # Train
-    best_cfg.train.lr = best_params.get("lr", best_cfg.train.lr)
-    best_cfg.train.batch_size = best_params.get("batch_size", best_cfg.train.batch_size)
-    best_cfg.train.sup_w_end = best_params.get("sup_w_end", best_cfg.train.sup_w_end)
-    best_cfg.train.phys_penalty_w = best_params.get("phys_penalty_w", best_cfg.train.phys_penalty_w)
-    
-    # Aug
-    best_cfg.augmentations.intensity_noise_scale = best_params.get("intensity_noise", best_cfg.augmentations.intensity_noise_scale)
+        # Best Config 저장
+        best_params = study.best_params
+        print("💾 Saving best configuration to 'best_hpo_config.yaml'...")
+        
+        if YAML_PATH.exists():
+            best_cfg = XRefineConfig.load_yaml(YAML_PATH)
+        else:
+            from xrefine.config import CONFIG
+            best_cfg = CONFIG.model_copy(deep=True)
+            
+        # Apply Best Params (Only Optimized Ones)
+        best_cfg.model.encoder_depth = best_params.get("enc_depth", best_cfg.model.encoder_depth)
+        best_cfg.model.n_channels = best_params.get("n_channels", best_cfg.model.n_channels)
+        best_cfg.model.kernel_size = best_params.get("kernel_size", best_cfg.model.kernel_size)
+        best_cfg.model.hidden_dim = best_params.get("hidden_dim", best_cfg.model.hidden_dim)
+        
+        best_cfg.train.batch_size = best_params.get("batch_size", best_cfg.train.batch_size)
+        best_cfg.train.sup_w_end = best_params.get("sup_w_end", best_cfg.train.sup_w_end)
+        
+        best_cfg.augmentations.intensity_noise_scale = best_params.get("intensity_noise", best_cfg.augmentations.intensity_noise_scale)
 
-    # Save
-    with open("best_hpo_config.yaml", 'w', encoding='utf-8') as f:
-        yaml.dump(best_cfg.model_dump(mode='json'), f, sort_keys=False)
+        # Save
+        with open("best_hpo_config.yaml", 'w', encoding='utf-8') as f:
+            yaml.dump(best_cfg.model_dump(mode='json'), f, sort_keys=False)
+            
+    except ValueError:
+        logger.warning("No completed trials found in the database yet.")
     
     print("="*60)
