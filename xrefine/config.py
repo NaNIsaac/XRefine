@@ -47,7 +47,7 @@ class PhysicalRangeConfig(BaseModel):
     rho_ox: Tuple[float, float] = (14.0, 20.0)
     
     # Instrumental
-    L: Tuple[float, float] = (9.0, 15.0)
+    L: Tuple[float, float] = (5.0, 25.0)  # Expanded range for better footprint fitting
     beam_width: Tuple[float, float] = (0.01, 0.3)
     bkg: Tuple[float, float] = (-9.0, -5.0)
     i0: Tuple[float, float] = (0.8, 1.2)
