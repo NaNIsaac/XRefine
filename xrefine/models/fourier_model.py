@@ -178,42 +178,44 @@ class XRR_Fourier_PINN(nn.Module):
         phys_penalty = self.validate_physics(params)
 
         return params, r_final, phys_penalty
-    
+
     def forward_with_params(self, params: ParamSet) -> tuple[ParamSet, torch.Tensor, torch.Tensor]:
-        """직접 파라미터를 받아 물리 시뮬레이션을 수행 (장치 일관성 확보 버전)"""
-        batch_size = params.d_f.size(0)
-        device = params.d_f.device # [핵심] 입력 데이터가 위치한 장치 파악
+        """
+        [Device Fix] 외부(Scipy 등)에서 생성된 파라미터가 
+        모델의 GPU와 일치하지 않는 문제를 방지합니다.
+        """
+        # 1. 모든 파라미터를 모델의 현재 디바이스로 강제 이동
+        device = next(self.parameters()).device
+        params.to(device)
 
-        with torch.amp.autocast(device_type='cuda', enabled=False):
-            # 1. Thickness & Roughness 조립
-            thickness = torch.cat([params.d_f, params.d_ox], dim=-1)
-            roughness = torch.cat([params.sig_f, params.sig_ox, params.sig_ox], dim=-1)
-
-            # 2. SLD 구성 (Ambient 및 Substrate 장치 명시)
-            # amb와 sub를 생성할 때 device를 반드시 지정해야 합니다.
-            amb = torch.zeros(batch_size, 1, device=device) # CPU -> GPU
-            sub = torch.full((batch_size, 1), self.config.ranges.substrate_sld, device=device) # CPU -> GPU
-            
-            # 이제 모든 텐서가 동일한 장치에 있으므로 cat 연산이 성공합니다.
-            sld_full = torch.cat([amb, params.rho_f, params.rho_ox, sub], dim=-1)
-
-            # 3. 시뮬레이터 입력 데이터 장치 확인
-            q_batch = self.q_grid.to(device).unsqueeze(0).expand(batch_size, -1)
-            dq = torch.tensor([[self.config.instrument.res]], device=device)
-
-            r_recon = self.simulator(
-                q=q_batch,
-                thickness=thickness,
-                roughness=roughness,
-                sld=sld_full,
-                sample_length=params.L,
-                beam_width=params.beam_width,
-                dq=dq
-            )
-
-        # 4. Scaling 및 후처리
-        r_final = (params.i0 * r_recon) + torch.pow(10.0, params.bkg)
+        # 2. 물리 구조 조립 (ParamSet 내부 메소드 활용)
+        thickness, roughness, sld_full = params.assemble_structure(self.config.ranges.substrate_sld)
+        
+        # 3. 시뮬레이션 (forward와 동일한 시그니처 사용)
+        q_batch = self.q_grid.unsqueeze(0).expand(thickness.size(0), -1).to(device)
+        dq = torch.tensor([[self.config.instrument.res]], device=device)
+        
+        r_sim = self.simulator(
+            q_batch, 
+            thickness, 
+            roughness, 
+            sld_full,
+            sample_length=params.L,
+            beam_width=params.beam_width,
+            dq=dq
+        )
+        
+        # [Device Fix] Simulator 출력값 디바이스 확인
+        if r_sim.device != device:
+            r_sim = r_sim.to(device)
+        
+        # 4. 스케일 및 배경 보정 (forward와 동일, 명시적 디바이스 이동)
+        i0 = params.i0.to(device) if params.i0.device != device else params.i0
+        bkg = params.bkg.to(device) if params.bkg.device != device else params.bkg
+        r_final = (i0 * r_sim) + torch.pow(10.0, bkg)
         r_final = torch.clamp(r_final, min=1e-11, max=2.0)
+        
+        # 5. 물리 제약 페널티 계산
         penalty = self.validate_physics(params)
-
+        
         return params, r_final, penalty

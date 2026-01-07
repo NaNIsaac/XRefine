@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field, fields
 from typing import Any, List
+from collections.abc import Iterator
 
 import torch
 from torch import Tensor
@@ -152,16 +153,66 @@ class FitTarget:
 
 @dataclass
 class ParamSet:
-    d_f: Tensor    = field(metadata={'mult': 'n', 'type': 'physics'})
+    d_f: Tensor = field(metadata={'mult': 'n', 'type': 'physics'})
     sig_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
     rho_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
     d_ox: Tensor   = field(metadata={'mult': 1, 'type': 'physics'})
     sig_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
     rho_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
-    L: Tensor          = field(metadata={'mult': 1, 'type': 'instrument'})
-    i0: Tensor         = field(metadata={'mult': 1, 'type': 'instrument'})
-    bkg: Tensor        = field(metadata={'mult': 1, 'type': 'instrument'}) 
+    L: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
+    i0: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
+    bkg: Tensor = field(metadata={'mult': 1, 'type': 'instrument'}) 
     beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
+
+    def keys(self) -> Iterator[str]:
+        """필드 이름들에 대한 iterator 반환"""
+        return (f.name for f in fields(self))
+
+    def values(self) -> Iterator[Tensor]:
+        """텐서 값들에 대한 iterator 반환"""
+        return (getattr(self, f.name) for f in fields(self))
+
+    def items(self) -> Iterator[tuple[str, Tensor]]:
+        """(이름, 텐서) 쌍에 대한 iterator 반환"""
+        return ((f.name, getattr(self, f.name)) for f in fields(self))
+
+    def __getitem__(self, key: str) -> Tensor:
+        return getattr(self, key)
+
+    def __contains__(self, key: str) -> bool:
+        # fields()를 직접 조회하여 효율적으로 체크
+        return any(f.name == key for f in fields(self))
+
+    def requires_grad_(self, requires_grad: bool = True) -> "ParamSet":
+        """In-place로 모든 텐서의 gradient 추적 설정"""
+        for v in self.values():
+            if isinstance(v, torch.Tensor):
+                v.requires_grad_(requires_grad)
+        return self
+
+    def get_optimized_copy(self) -> "ParamSet":
+        """
+        최적화(Refinement)를 위해 detach 및 clone된 
+        새로운 ParamSet 객체를 생성하고 gradient를 활성화합니다.
+        """
+        return ParamSet(**{
+            k: v.detach().clone().requires_grad_(True) 
+            for k, v in self.items()
+        })
+
+    def assemble_structure(self, substrate_sld: float) -> tuple[Tensor, Tensor, Tensor]:
+        device = self.d_f.device
+        batch_size = self.d_f.shape[0]
+        
+        thickness = torch.cat([self.d_f, self.d_ox], dim=-1).float()
+        #의 물리 구조 일관성 유지
+        roughness = torch.cat([self.sig_f, self.sig_ox, self.sig_ox], dim=-1).float()
+        
+        ambient = torch.zeros((batch_size, 1), device=device)
+        substrate = torch.full((batch_size, 1), substrate_sld, device=device)
+        sld = torch.cat([ambient, self.rho_f, self.rho_ox, substrate], dim=-1).float()
+        
+        return thickness, roughness, sld
 
     @classmethod
     def cat(cls, ps_list: list["ParamSet"]) -> "ParamSet":
