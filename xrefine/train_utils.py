@@ -68,7 +68,7 @@ class XRRWeightedLoss(nn.Module):
                      (curr_sup_w * loss_param) + \
                      (config.train.phys_penalty_w * phys_penalty)
 
-        return total_loss, loss_recon_base, loss_fringe, loss_qc
+        return total_loss, loss_recon_base, loss_fringe, loss_qc, loss_param
 
 def plot_learning_curves(history: Dict[str, List[float]], save_path: str | Path):
     """전체 학습 과정의 Loss 추이 요약"""

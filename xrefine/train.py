@@ -152,8 +152,13 @@ class XRefineTrainer:
         
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
         p_pred, r_recon, phys_penalty = self.model(log_r_obs)
-        loss, _, _, _ = self.criterion(p_pred, r_recon, log_r_obs, p_true, self.cfg, curr_sup_w, phys_penalty)
-        return loss.item(), p_pred, r_recon
+        loss, _, _, _, loss_param = self.criterion(p_pred, r_recon, log_r_obs, p_true, self.cfg, curr_sup_w, phys_penalty)
+        
+        metrics = {
+            "loss": loss.item(),
+            "loss_param": loss_param.item() if isinstance(loss_param, torch.Tensor) else loss_param
+        }
+        return metrics, p_pred, r_recon
 
     def fit(self, resume: bool = False):
         if resume:
@@ -166,7 +171,8 @@ class XRefineTrainer:
             curr_w = self._get_curriculum_weight(epoch)
             
             avg_train_loss = self.train_epoch(epoch, curr_w)
-            val_loss, v_pred, v_recon = self.validate(curr_w)
+            val_metrics, v_pred, v_recon = self.validate(curr_w)
+            val_loss = val_metrics["loss"]
             
             # 히스토리 기록
             self.history["train_loss"].append(avg_train_loss)
@@ -175,6 +181,7 @@ class XRefineTrainer:
             # TensorBoard 기록
             self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
             self.writer.add_scalar("Loss/Val", val_loss, epoch)
+            self.writer.add_scalar("Loss/Val_Param", val_metrics["loss_param"], epoch)
             self.writer.add_scalar("Meta/Sup_Weight", curr_w, epoch)
             self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
 
