@@ -1,12 +1,15 @@
+from pathlib import Path
+from datetime import datetime
+from copy import deepcopy
+from typing import Set, Dict, Optional
+
 import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from pathlib import Path
 from scipy.optimize import differential_evolution
+from scipy.signal import find_peaks
 from scipy.stats import qmc
-from typing import Dict, Set
-from datetime import datetime
 
 from xrefine.config import CONFIG, XRefineConfig
 from xrefine.models import XRR_Fourier_PINN
@@ -14,121 +17,80 @@ from xrefine.physics_utils import tth2q
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
 
+def calculate_r2(y_true: torch.Tensor, y_pred: torch.Tensor, mask: torch.Tensor) -> float:
+    """
+    R² (결정 계수) 계산 함수
+    """
+    y_true_masked = y_true[mask]
+    y_pred_masked = y_pred[mask]
+    
+    if len(y_true_masked) == 0:
+        return -1.0
+        
+    ss_res = torch.sum((y_true_masked - y_pred_masked) ** 2)
+    ss_tot = torch.sum((y_true_masked - y_true_masked.mean()) ** 2)
+    
+    # 분모가 0이 되는 것을 방지
+    r2 = 1 - (ss_res / (ss_tot + 1e-12))
+    return float(r2.item())
 
 def load_real_data(file_path: str, config: XRefineConfig):
-    """실제 데이터를 로드하고 정규화를 수행합니다."""
+    """실제 데이터를 로드하고 유효 q 영역을 추출합니다."""
+    # 데이터 로드
     df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
     for col in df.columns:
         df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
 
     x_raw, y_raw = df.values[:, 0], df.values[:, 1]
+    
+    # 2theta -> q 변환
     x_raw = tth2q(x_raw, config.instrument.wavelength)
 
-    # 최대값 = 1.0으로 정규화
+    # [중요] ALD 데이터의 Plateau를 기준으로 1.0 정규화
     norm_factor = y_raw.max()
     y_norm = y_raw / (norm_factor + 1e-12)
     log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
 
+    # Grid Interpolation
     q_target = config.q_grid.numpy()
     log_y_interp = np.interp(q_target, x_raw, log_y_raw)
+    
+    # 측정 범위 밖 마스킹 (-15.0)
     log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = -15.0
     
     return torch.from_numpy(log_y_interp).float().view(1, -1)
 
-
-def calculate_r2(y_true: torch.Tensor, y_pred: torch.Tensor, mask: torch.Tensor) -> float:
-    """R² (결정 계수) 계산"""
-    y_true_masked = y_true[mask]
-    y_pred_masked = y_pred[mask]
-    
-    ss_res = torch.sum((y_true_masked - y_pred_masked) ** 2)
-    ss_tot = torch.sum((y_true_masked - y_true_masked.mean()) ** 2)
-    
-    r2 = 1 - (ss_res / (ss_tot + 1e-12))
-    return float(r2.item())
-
-
-def three_stage_refinement(model, p_ai: ParamSet, log_r_obs: torch.Tensor, config: XRefineConfig):
-    """
-    3단계 최적화:
-    0단계 - 풋프린트 파라미터 (L, beam_width) - 임계각 이전 영역만 사용
-    1단계 - 기타 Instrumental (bkg) - 전체 영역
-    2단계 - Physics 파라미터 - 전체 영역
-    """
-    
-    FOOTPRINT_PARAMS = {'L', 'beam_width'}
-    OTHER_INSTRUMENTAL = {'bkg', 'dq', 'tth_offset'}
-    PHYSICS_PARAMS = {'d_f', 'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox'}
-    FIXED_PARAMS = {'i0': 1.0}
-    
-    # 임계각 위치 감지 (피크 위치)
-    r_obs_linear = 10 ** log_r_obs.squeeze().cpu().numpy()
-    q_grid = config.q_grid.numpy()
-    peak_idx = np.argmax(r_obs_linear)
-    q_critical = q_grid[peak_idx]
-    
-    logger.info(f"📍 임계각 위치 감지: q_c = {q_critical:.4f} Å⁻¹ (index {peak_idx})")
-    
-    # 0단계: 풋프린트 파라미터 최적화 (임계각 이전 영역만)
-    logger.info("👣 [0단계] 풋프린트 최적화 (q < q_critical 영역)...")
-    p_stage0 = _optimize_subset(
-        model, p_ai, log_r_obs, config,
-        optimize_keys=FOOTPRINT_PARAMS,
-        forced_params=FIXED_PARAMS,
-        q_max=q_critical,
-        use_r2_loss=True,
-        maxiter=80, popsize=15
-    )
-    
-    # 1단계: 기타 instrumental 최적화 (전체 영역)
-    logger.info("🔧 [1단계] Background 최적화 (전체 영역)...")
-    p_stage1 = _optimize_subset(
-        model, p_stage0, log_r_obs, config,
-        optimize_keys=OTHER_INSTRUMENTAL,
-        forced_params=FIXED_PARAMS,
-        use_r2_loss=True,
-        maxiter=50, popsize=10
-    )
-    
-    # 2단계: Physics 파라미터 최적화
-    logger.info("🧬 [2단계] Physics 파라미터 최적화...")
-    p_final = _optimize_subset(
-        model, p_stage1, log_r_obs, config,
-        optimize_keys=PHYSICS_PARAMS,
-        forced_params=FIXED_PARAMS,
-        use_r2_loss=False,
-        maxiter=200, popsize=20
-    )
-    
-    return p_final
-
-
 def _optimize_subset(
     model, p_init: ParamSet, log_r_obs: torch.Tensor, config: XRefineConfig,
     optimize_keys: Set[str], forced_params: Dict[str, float] = None,
-    q_max: float = None, use_r2_loss: bool = False, 
-    maxiter: int = 150, popsize: int = 20
+    q_min: Optional[float] = None, q_max: Optional[float] = None, 
+    use_gradient_loss: bool = False, use_linear_loss: bool = False,
+    use_r2_loss: bool = False,
+    maxiter: int = 100, popsize: int = 20
 ) -> ParamSet:
-    """특정 파라미터 그룹만 최적화."""
+    """
+    부분 파라미터 최적화 엔진 (Scipy DE 기반)
+    """
     target_device = next(model.parameters()).device
     range_config = config.ranges
     
+    # 타겟 데이터 및 마스크 준비
     log_r_obs_gpu = log_r_obs.to(target_device)
     mask = (log_r_obs_gpu > -14.0)
     
-    # q_max가 지정되면 해당 영역만 마스크에 포함
-    if q_max is not None:
-        q_grid = config.q_grid.to(target_device)
-        q_mask = (q_grid < q_max).unsqueeze(0)
-        mask = mask & q_mask
-        logger.info(f"   → 마스크 영역: q < {q_max:.4f} ({mask.sum().item()} points)")
+    # Q-Range Cutting
+    q_grid = config.q_grid.to(target_device)
+    if q_max is not None: mask &= (q_grid < q_max).unsqueeze(0)
+    if q_min is not None: mask &= (q_grid > q_min).unsqueeze(0)
 
+    # 파라미터 Flattening 및 범위 설정
     opt_param_info = []
     opt_guess_norm = []
     fixed_params = {}
     
     for k, v in p_init.items():
         if forced_params and k in forced_params:
+            # 강제 고정 (예: Roughness Locking)
             fixed_params[k] = torch.tensor([[forced_params[k]]], dtype=torch.float32, device=target_device)
             continue
             
@@ -136,17 +98,21 @@ def _optimize_subset(
         val_flat = v.detach().cpu().numpy().flatten()
         
         if k in optimize_keys:
+            # 최적화 대상
             opt_param_info.append({'key': k, 'size': val_flat.size, 'min': p_min, 'max': p_max})
+            # [DEBUG] Check bounds
+            logger.info(f"🔎 Param {k}: Bounds [{p_min:.2f}, {p_max:.2f}]")
+            
             norm_val = (val_flat - p_min) / (p_max - p_min + 1e-9)
             opt_guess_norm.extend(np.clip(norm_val, 0.0, 1.0).tolist())
         else:
+            # 고정 대상 (AI 초기값 유지)
             fixed_params[k] = torch.tensor(val_flat, dtype=torch.float32, device=target_device).view(1, -1)
 
     total_dim = len(opt_guess_norm)
-    if total_dim == 0:
-        logger.warning("최적화할 파라미터가 없습니다.")
-        return p_init
+    if total_dim == 0: return p_init
 
+    # 목적 함수 정의
     def objective(trial_vector):
         try:
             p_dict = dict(fixed_params)
@@ -156,71 +122,264 @@ def _optimize_subset(
                 phys_val = trial_vector[cursor : cursor + size] * (p_max - p_min) + p_min
                 p_dict[k] = torch.tensor(phys_val, dtype=torch.float32, device=target_device).view(1, size)
                 cursor += size
-            
+
             p_set = ParamSet(**p_dict)
-            
+
             with torch.no_grad():
                 _, r_sim, penalty = model.forward_with_params(p_set)
-                
-                # 피크 정규화
-                r_sim_peak = r_sim.max()
-                r_sim_normalized = r_sim / (r_sim_peak + 1e-12)
-                log_r_sim = torch.log10(torch.clamp(r_sim_normalized, min=1e-12))
-                
+                log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
+
+                # [LOSS 1] 기본 MSE (Log or Linear)
+                if use_linear_loss:
+                    # Linear R 비교 (프린지 진폭에 민감)
+                    r_obs_linear = 10 ** log_r_obs_gpu
+                    mse_loss = torch.mean(((r_sim - r_obs_linear)**2) * mask)
+                else:
+                    mse_loss = torch.mean(((log_r_sim - log_r_obs_gpu)**2) * mask)
+                loss = mse_loss
+
+                # [LOSS 2] Gradient Loss (Fringe 형상 보존)
+                if use_gradient_loss:
+                    diff_sim = torch.diff(log_r_sim, dim=-1)
+                    diff_obs = torch.diff(log_r_obs_gpu, dim=-1)
+                    diff_mask = mask[:, 1:]
+                    grad_loss = torch.mean(((diff_sim - diff_obs)**2) * diff_mask)
+                    loss += grad_loss * 5.0 
+
+                # [LOSS 3] R2 Score (선택적)
                 if use_r2_loss:
                     r2 = calculate_r2(log_r_obs_gpu.squeeze(), log_r_sim.squeeze(), mask.squeeze())
+                    # R2 최대화 = -R2 최소화
                     loss = -r2
-                else:
-                    loss = torch.mean(((log_r_sim - log_r_obs_gpu)**2) * mask)
-                
-                total_val = loss + (penalty * config.train.phys_penalty_w)
-                return float(total_val.item()) if not use_r2_loss else float(total_val)
-        
-        except Exception as e:
-            logger.error(f"❌ Objective 오류: {e}")
-            raise e
 
-    # Latin Hypercube 초기화
+                # [Penalty] 물리적 제약 (너무 큰 Roughness 방지 제거됨)
+                r_pen = 0.0
+                # 기존 sig > 5.0 페널티 제거 (Damping 맞추기 위해 더 높은 Roughness 허용)
+                
+                # 2. [Physical Constraint] Roughness < Thickness / 2.0
+                # 거칠기가 두께의 절반을 넘으면 물리적으로 층이 유지될 수 없음
+                if p_set.sig_f.item() > (p_set.d_f.item() / 2.0):
+                    r_pen += 100.0 + (p_set.sig_f.item() - p_set.d_f.item()/2.0) * 10.0
+                
+                if p_set.sig_ox.item() > (p_set.d_ox.item() / 2.0):
+                    r_pen += 100.0 + (p_set.sig_ox.item() - p_set.d_ox.item()/2.0) * 10.0
+
+                return float((loss + penalty + r_pen).item())
+                
+        except Exception as e:
+            # 디버깅용 로그
+            # logger.error(f"Objective Error: {e}") 
+            return 1e9
+
+    # Scipy DE 실행
     sampler = qmc.LatinHypercube(d=total_dim)
     init_pop = sampler.random(n=popsize)
-    init_pop[0] = np.array(opt_guess_norm)
+    init_pop[0] = np.array(opt_guess_norm) # AI 초기값 주입
 
     result = differential_evolution(
-        objective,
-        bounds=[(0.0, 1.0)] * total_dim,
-        strategy='best1bin',
-        maxiter=maxiter,
-        popsize=popsize,
-        tol=0.001,
-        atol=1e-8,
-        mutation=(0.5, 1.0),
-        recombination=0.7,
-        polish=True,
-        init=init_pop,
-        disp=False,
-        workers=1
+        objective, bounds=[(0, 1)]*total_dim, strategy='best1bin',
+        maxiter=maxiter, popsize=popsize, mutation=(0.5, 1.0), recombination=0.7,
+        init=init_pop, disp=False, workers=1
     )
-    
-    metric_name = "R²" if use_r2_loss else "MSE"
-    metric_val = -result.fun if use_r2_loss else result.fun
-    logger.info(f"✅ 완료: {result.nit} iterations, {metric_name} = {metric_val:.6f}")
 
-    # 결과 조립
+    # 결과 복원
     final_dict = {k: v.cpu() for k, v in fixed_params.items()}
     cursor = 0
     for info in opt_param_info:
         phys_val = result.x[cursor : cursor + info['size']] * (info['max'] - info['min']) + info['min']
         final_dict[info['key']] = torch.tensor(phys_val, dtype=torch.float32).view(1, info['size'])
         cursor += info['size']
-        
+
     return ParamSet(**final_dict)
 
+def three_stage_refinement(model, p_ai: ParamSet, log_r_obs: torch.Tensor, config: XRefineConfig):
+    """
+    ALD 특화 3단계 최적화 전략
+    """
+    Q_CUTOFF = 0.45  # 노이즈가 심해지는 고각도 영역 커팅
+    
+    # 임계각 위치 감지 (피크 위치)
+    r_obs_linear = 10 ** log_r_obs.squeeze().cpu().numpy()
+    q_grid = config.q_grid.numpy()
+    peak_idx = np.argmax(r_obs_linear)
+    q_critical = q_grid[peak_idx]
+    logger.info(f"📍 임계각 위치 감지: q_c = {q_critical:.4f} Å⁻¹ (index {peak_idx})")
+
+    # [0단계] 풋프린트 & 배경 (Low Q)
+    logger.info("👣 [0단계] 풋프린트 & Background (Q < 0.15)...")
+    p_stage0 = _optimize_subset(
+        model, p_ai, log_r_obs, config,
+        optimize_keys={'beam_width', 'L', 'i0', 'bkg'},
+        q_max=0.15, maxiter=50, popsize=20
+    )
+
+    # [1단계] 두께 Grid Search (Global Search)
+    # Gradient Descent 대신 1D Grid Scan을 통해 Global Minimum을 확실히 찾음
+    # Metric: 1 - Correlation (패턴 매칭)
+    logger.info("📐 [1단계] Thickness Grid Search (Correlation 기반, 10~1200A)...")
+
+    d_grid = np.linspace(20, 1200, 500) # 20A ~ 1200A, 약 2.4A 간격
+    best_corr_loss = 1e9
+    best_d = p_stage0.d_f.item()
+
+    # Grid Search용 임시 파라미터 (Stage0 기반)
+    p_scan = deepcopy(p_stage0)
+    # Oxide/Roughness 제거하여 메인 주기만 확인
+    p_scan.d_ox.fill_(0.0)
+    p_scan.sig_ox.fill_(0.0)
+    p_scan.rho_ox.fill_(0.0)
+    p_scan.sig_f.fill_(2.0) # 기본 Roughness
+
+    # Q-Mask for Correlation (0.05 ~ cutoff)
+    q_grid_gpu = config.q_grid.to(config.device)
+    log_r_obs_gpu = log_r_obs.to(config.device)
+    mask_corr = (log_r_obs_gpu > -14.0) & (q_grid_gpu > 0.05) & (q_grid_gpu < Q_CUTOFF)
+    target_pattern = log_r_obs_gpu[mask_corr]
+    target_mean = target_pattern.mean()
+    
+    scores = []
+    
+    for d_val in d_grid:
+        p_scan.d_f.fill_(d_val)
+        
+        with torch.no_grad():
+            _, r_sim, _ = model.forward_with_params(p_scan)
+            r_sim_norm = r_sim / (r_sim.max() + 1e-12)
+            log_r_sim = torch.log10(torch.clamp(r_sim_norm, min=1e-12))
+            
+            sim_pattern = log_r_sim[mask_corr]
+            
+            # Pearson Correlation Calculation
+            vx = sim_pattern - sim_pattern.mean()
+            vy = target_pattern - target_mean
+            corr = torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx ** 2)) * torch.sqrt(torch.sum(vy ** 2)) + 1e-9)
+            
+            # Loss = 1 - Correlation
+            c_loss = 1.0 - corr.item()
+            scores.append(c_loss)
+            
+            if c_loss < best_corr_loss:
+                best_corr_loss = c_loss
+                best_d = d_val
+
+    # [Smart Selection] Valley Detection to find true minima
+    peaks, _ = find_peaks(-np.array(scores), prominence=0.005) 
+
+    # [Dynamic Filter] Critical Angle 기반 최소 두께 설정
+    # 경험적으로 Artifact는 2.0/Qc 이하에서 발생 (e.g. Qc=0.04 -> 50A)
+    # q_critical은 three_stage_refinement 함수 초반에 계산됨
+    min_d_threshold = 2.0 / (q_critical + 1e-9)
+    logger.info(f"🛡️ Dynamic Thickness Filter: d < {min_d_threshold:.1f}A 제외 (based on Qc={q_critical:.4f})")
+    
+    candidates = []
+    for idx in peaks:
+        d_cand = d_grid[idx]
+        loss_cand = scores[idx]
+        
+        if d_cand < min_d_threshold:
+            logger.info(f"⚠️ 후보 제외 (Too Thin): {d_cand:.1f}A (Loss={loss_cand:.4f})")
+            continue
+            
+        candidates.append((d_cand, loss_cand))
+    
+    # 만약 적절한 후보가 없으면 그냥 전체 Min 사용
+    if not candidates:
+        logger.warning("🚫 적절한 Local Minima를 찾지 못함. Global Min 사용.")
+        final_best_d = best_d
+    else:
+        # Loss 순 정렬 후 1등 선택
+        candidates.sort(key=lambda x: x[1])
+        final_best_d = candidates[0][0]
+        logger.info(f"✅ 후보군 Top 3: {[f'{d:.1f}A({l:.4f})' for d, l in candidates[:3]]}")
+
+    logger.info(f"🎯 최종 선택: d_f = {final_best_d:.1f} A")
+    
+    # 찾은 Best Thickness로 Stage 1 결과 설정
+    p_stage1 = deepcopy(p_stage0)
+    p_stage1.d_f.fill_(final_best_d)
+    # Oxide/Roughness는 일단 0으로 (Stage 2에서 복원)
+    p_stage1.d_ox.fill_(0.0)
+    p_stage1.sig_ox.fill_(0.0)
+    p_stage1.rho_ox.fill_(0.0)
+    p_stage1.sig_f.fill_(3.0) 
+    
+    # [2단계] Linear R 기반 Roughness/Damping 최적화
+    logger.info(f"� [2단계] Linear R 피팅 (Fringe 진폭 맞추기, d_f={final_best_d:.1f}A 고정)...")
+    
+    p_combined = p_stage1
+    # AI 초기값에서 Oxide/Roughness 복원
+    p_combined.sig_f = torch.tensor([[3.0]], device=p_ai.d_f.device)
+    p_combined.d_ox = p_ai.d_ox
+    p_combined.sig_ox = p_ai.sig_ox
+    p_combined.rho_ox = p_ai.rho_ox
+    
+    fixed_stage2 = {'d_f': final_best_d}
+    
+    p_stage2 = _optimize_subset(
+        model, p_combined, log_r_obs, config,
+        optimize_keys={'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox', 'L', 'i0', 'bkg', 'dq'},
+        forced_params=fixed_stage2,
+        q_max=Q_CUTOFF, 
+        use_linear_loss=True,  # Linear R로 프린지 진폭 맞추기
+        maxiter=100, popsize=30
+    )
+    
+    # [3단계] Log R 기반 최종 미세 조정
+    logger.info("🔬 [3단계] Log R 미세 조정...")
+    
+    p_stage3 = _optimize_subset(
+        model, p_stage2, log_r_obs, config,
+        optimize_keys={'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox', 'L', 'i0', 'bkg', 'dq'},
+        forced_params=fixed_stage2,
+        q_max=Q_CUTOFF,
+        use_linear_loss=False,  # Log R로 마무리
+        maxiter=100, popsize=30
+    )
+    
+    # [4단계] 두께 미세 조정 (±50A 범위)
+    logger.info(f"🎯 [4단계] 두께 미세 조정 (d_f ≈ {final_best_d:.1f} ± 50A)...")
+    
+    # d_f 범위를 좁은 구간으로 제한하기 위해 임시로 config 변경
+    original_d_range = config.ranges.d_f
+    config.ranges.d_f = (max(10.0, final_best_d - 50.0), final_best_d + 50.0)
+    
+    p_final = _optimize_subset(
+        model, p_stage3, log_r_obs, config,
+        # 이제 d_f도 포함 (좁은 범위에서만)
+        optimize_keys={'d_f', 'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox', 'L', 'i0', 'bkg', 'dq'},
+        q_max=Q_CUTOFF,
+        use_linear_loss=False,
+        maxiter=50, popsize=20
+    )
+    
+    # 원래 범위 복원
+    config.ranges.d_f = original_d_range
+    
+    return p_final
 
 @torch.no_grad()
 def run_real_inference(checkpoint_path: str, data_path: str, output_dir: str = "./results"):
-    """실제 XRR 데이터에 대한 추론 및 피팅 실행"""
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    config = XRefineConfig(**ckpt['config'])
+    # Checkpoint 로드 (Windows Path 호환성 처리 포함)
+    import pathlib
+    temp = pathlib.PosixPath
+    pathlib.PosixPath = pathlib.WindowsPath
+    try:
+        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    except:
+        pathlib.PosixPath = temp
+        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    finally:
+        pathlib.PosixPath = temp
+
+    # Load Config from Checkpoint but OVERRIDE ranges from current code
+    # (Checking point may have old narrow ranges like sig_f < 5.0)
+    loaded_config_dict = ckpt['config']
+    config = XRefineConfig(**loaded_config_dict)
+    
+    # [Range Override] 현재 코드의 최신 Range 적용 (Roughness 20.0 등)
+    from xrefine.config import CONFIG
+    config.ranges = CONFIG.ranges
+    logger.info(f"🔄 Range Config Overridden: sig_f max = {config.ranges.sig_f[1]}")
     
     model = XRR_Fourier_PINN(config=config).to(config.device)
     model.load_state_dict(ckpt['model_state_dict'])
@@ -232,73 +391,57 @@ def run_real_inference(checkpoint_path: str, data_path: str, output_dir: str = "
     input_tensor = load_real_data(data_path, config)
     p_ai, r_ai, _ = model(input_tensor.to(config.device))
 
-    # 2. 3단계 최적화 실행
+    # 2. 3단계 최적화
     p_refined = three_stage_refinement(model, p_ai, input_tensor, config)
-    
-    # 3. 최종 결과 생성 (피크 정규화 적용)
+
+    # 3. 최종 결과
     p_final, r_final, _ = model.forward_with_params(p_refined.to(config.device))
-    r_final_normalized = r_final / (r_final.max() + 1e-12)
-    r_ai_normalized = r_ai / (r_ai.max() + 1e-12)
-    
-    # 4. 통계 계산
-    log_r_obs = input_tensor.to(config.device)
-    mask = (log_r_obs > -14.0)
-    log_r_final = torch.log10(torch.clamp(r_final_normalized, min=1e-12))
-    log_r_ai = torch.log10(torch.clamp(r_ai_normalized, min=1e-12))
-    
-    r2_final = calculate_r2(log_r_obs.squeeze(), log_r_final.squeeze(), mask.squeeze())
-    r2_ai = calculate_r2(log_r_obs.squeeze(), log_r_ai.squeeze(), mask.squeeze())
-    mse_final = float(torch.mean(((log_r_final - log_r_obs)**2) * mask).item())
-    mse_ai = float(torch.mean(((log_r_ai - log_r_obs)**2) * mask).item())
 
-    # 5. 결과 출력
-    print("\n" + "="*60)
-    print(f"📊 XRefine 피팅 결과: {data_name}")
-    print("="*60)
-    print(f"\n{'메트릭':<20} {'AI 초기값':<15} {'최적화 후':<15}")
-    print("-"*50)
-    print(f"{'R²':<20} {r2_ai:<15.4f} {r2_final:<15.4f}")
-    print(f"{'MSE (log scale)':<20} {mse_ai:<15.6f} {mse_final:<15.6f}")
-    
-    print(f"\n{'파라미터':<15} {'AI 초기값':<15} {'최적화 후':<15}")
-    print("-"*50)
-    for k in p_ai.keys():
-        ai_val = getattr(p_ai, k).item()
-        final_val = getattr(p_final, k).item()
-        print(f"{k:<15} {ai_val:<15.4f} {final_val:<15.4f}")
-    print("="*60 + "\n")
+    # 정규화 (시각화용)
+    r_final_norm = r_final / (r_final.max() + 1e-12)
+    r_ai_norm = r_ai / (r_ai.max() + 1e-12)
 
-    # 6. 그래프 저장
+    # 4. 시각화 저장
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     fig_path = output_path / f"{data_name}_fit_{datetime.now().strftime('%H%M%S')}.png"
-    
-    _save_plot(config, input_tensor[0], r_ai_normalized[0], r_final_normalized[0], 
-               data_name, r2_final, fig_path)
-    
-    logger.info(f"📈 그래프 저장: {fig_path}")
 
+    _save_plot(config, input_tensor[0], r_ai_norm[0], r_final_norm[0], 
+               data_name, calculate_r2(input_tensor.to(config.device).squeeze(), 
+                                     torch.log10(torch.clamp(r_final_norm, min=1e-12)).squeeze(), 
+                                     (input_tensor.to(config.device)>-14).squeeze()), 
+               fig_path)
+
+    logger.info(f"✨ 완료. 결과 저장됨: {fig_path}")
+    print("Refined Params:", p_final)
 
 def _save_plot(config, y_meas_log, r_ai, r_ref, title, r2, save_path):
     q = config.q_grid.numpy()
+    y_meas = y_meas_log.cpu().numpy()
     
-    fig, ax = plt.subplots(figsize=(12, 7))
-    ax.semilogy(q, 10**y_meas_log.cpu().numpy(), 'ko', ms=3, alpha=0.3, label='Measured Data')
-    ax.semilogy(q, r_ai.cpu().numpy(), 'b--', alpha=0.5, label='AI Initial Guess')
-    ax.semilogy(q, r_ref.cpu().numpy(), 'r-', lw=2, label=f'Optimized Fit (R²={r2:.4f})')
+    # 유효 데이터 영역만 표시 (마스킹 영역 제외)
+    valid_mask = y_meas > -14.0
+    q_valid = q[valid_mask]
+    y_valid = 10 ** y_meas[valid_mask]
+    r_ai_valid = r_ai.cpu().numpy()[valid_mask]
+    r_ref_valid = r_ref.cpu().numpy()[valid_mask]
     
-    ax.set_title(f"XRefine Result: {title}", fontsize=14)
-    ax.set_xlabel("q (Å⁻¹)", fontsize=12)
-    ax.set_ylabel("Reflectivity", fontsize=12)
-    ax.legend(fontsize=11)
-    ax.grid(True, which='both', alpha=0.15)
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.semilogy(q_valid, y_valid, 'ko', ms=2, alpha=0.3, label='Measured')
+    ax.semilogy(q_valid, r_ai_valid, 'b--', alpha=0.6, label='AI Init')
+    ax.semilogy(q_valid, r_ref_valid, 'r-', lw=2, label=f'Refined (R²={r2:.3f})')
+    ax.set_xlabel("Q (Å⁻¹)")
+    ax.set_ylabel("Reflectivity")
+    ax.set_title(f"XRefine: {title}")
+    ax.legend()
+    ax.grid(True, alpha=0.2)
+    plt.savefig(save_path)
     plt.close(fig)
 
-
 if __name__ == "__main__":
-    CHECKPOINT = r"D:\02_Projects\Dev\X-ray_AI\XRefine\checkpoints_test\TestRun\best.pt"
-    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data2\#4.dat"
+    # 경로 설정
+    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\xrefine\v1\best.pt"
+    # DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\KBJ\ALD_A_no_XRR.dat"
+    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data\#1_xrr.dat"
+    
     run_real_inference(CHECKPOINT, DATA_FILE)

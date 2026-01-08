@@ -1,6 +1,6 @@
 # [General Settings]
 experiment_name: "v1"
-save_root: "D:\\03_Resources\\Data\\PINN"
+save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
 
