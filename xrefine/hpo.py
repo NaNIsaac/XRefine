@@ -1,66 +1,89 @@
+"""
+Hyperparameter Optimization (HPO) for XRefine
+=============================================
+Transformer-VAE 아키텍처 최적화를 위한 Optuna 스크립트.
+"""
 import optuna
 import numpy as np
-import torch
-import yaml
 from tqdm import tqdm
 from pathlib import Path
 
 from xrefine.config import XRefineConfig
 from xrefine.train import XRefineTrainer
-from xrefine.models.fourier_model import XRR_Fourier_PINN
+from xrefine.models import XRR_Transformer_PINN, XRR_Fourier_PINN
 from xrefine.logger import logger
 
 import optuna.logging
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # 1. HPO 상태 저장용 설정
-DB_PATH = "hpo_study.db"
-STUDY_NAME = "xrefine_hpo_expanded_v1"
+DB_PATH = "hpo_study_transformer.db"
+STUDY_NAME = "xrefine_hpo_transformer_v1"
 YAML_PATH = Path("config.yaml")
 
 def objective(trial: optuna.Trial):
-    # 설정 로드 및 파라미터 샘플링
+    # 설정 로드
     if YAML_PATH.exists():
         base_cfg = XRefineConfig.load_yaml(YAML_PATH)
     else:
         from xrefine.config import CONFIG
         base_cfg = CONFIG.model_copy(deep=True)
 
-    # --- Hyperparameter Search Space ---
+    # --- Hyperparameter Search Space (Transformer Focus) ---
     
-    # 1. New Exploration: Model Architecture (Concentrate here)
-    enc_depth = trial.suggest_int("enc_depth", 4, 8, step=2)
-    n_channels = trial.suggest_categorical("n_channels", [64, 128, 256])
-    kernel_size = trial.suggest_int("kernel_size", 15, 31, step=2)
-    hidden_dim = trial.suggest_categorical("hidden_dim", [512, 1024])
+    # 1. Model Architecture
+    model_type = base_cfg.model.model_type
     
-    # [LOCKED] Previously Optimized Params (Using values from config.yaml)
-    # f_scale = 43.0, lr = 5e-4, phys_penalty_w = 0.86
-    # We trust these values and focus computing power on architecture.
-
-    base_cfg.model.encoder_depth = enc_depth
-    base_cfg.model.n_channels = n_channels
-    base_cfg.model.kernel_size = kernel_size
-    base_cfg.model.hidden_dim = hidden_dim
+    if model_type == 'transformer':
+        # Transformer Parameters
+        hidden_dim = trial.suggest_categorical("hidden_dim", [128, 256, 512])
+        enc_depth = trial.suggest_int("enc_depth", 2, 6) # Layer 개수
+        n_heads = trial.suggest_categorical("n_heads", [4, 8])
+        dim_ff = trial.suggest_int("dim_feedforward", 256, 1024, step=128)
+        dropout = trial.suggest_float("dropout", 0.0, 0.3)
+        
+        # Fourier Feature (매우 중요)
+        fourier_scale = trial.suggest_float("fourier_scale", 20.0, 60.0)
+        
+        base_cfg.model.hidden_dim = hidden_dim
+        base_cfg.model.encoder_depth = enc_depth
+        base_cfg.model.n_heads = n_heads
+        base_cfg.model.dim_feedforward = dim_ff
+        base_cfg.model.dropout = dropout
+        base_cfg.model.fourier_scale = fourier_scale
+        
+    else:
+        # CNN Parameters (Legacy Support)
+        enc_depth = trial.suggest_int("enc_depth", 4, 8, step=2)
+        n_channels = trial.suggest_categorical("n_channels", [64, 128, 256])
+        kernel_size = trial.suggest_int("kernel_size", 15, 31, step=2)
+        
+        base_cfg.model.encoder_depth = enc_depth
+        base_cfg.model.n_channels = n_channels
+        base_cfg.model.kernel_size = kernel_size
 
     # 2. Training Dynamics
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
-    sup_w_end = trial.suggest_float("sup_w_end", 1000.0, 5000.0, log=True)
+    lr = trial.suggest_float("lr", 1e-4, 1e-3, log=True)
+    phys_penalty_w = trial.suggest_float("phys_penalty_w", 1.0, 50.0, log=True)
     
     base_cfg.train.batch_size = batch_size
-    base_cfg.train.sup_w_end = sup_w_end
+    base_cfg.train.lr = lr
+    base_cfg.train.phys_penalty_w = phys_penalty_w
     
     # 3. Augmentation
-    intensity_noise = trial.suggest_float("intensity_noise", 0.05, 0.4)
+    intensity_noise = trial.suggest_float("intensity_noise", 0.05, 0.3)
     base_cfg.augmentations.intensity_noise_scale = intensity_noise
 
     # Experiment Setup
     base_cfg.experiment_name = f"hpo_{trial.number}"
-    base_cfg.train.epochs = 15  # 에폭 약간 증가
+    base_cfg.train.epochs = 15  # 빠른 탐색을 위해 짧게 설정 (15 Epochs)
     
-    # 모델 및 트레이너 초기화
-    model = XRR_Fourier_PINN(base_cfg)
-    model.to(base_cfg.device)
+    # 모델 초기화
+    if model_type == 'transformer':
+        model = XRR_Transformer_PINN(base_cfg).to(base_cfg.device)
+    else:
+        model = XRR_Fourier_PINN(base_cfg, device=base_cfg.device).to(base_cfg.device)
     
     trainer = XRefineTrainer(model, config=base_cfg)
     best_metric = float('inf')
@@ -76,17 +99,21 @@ def objective(trial: optuna.Trial):
         if np.isnan(train_loss):
             return float('inf')
             
-        # 검증 (Parameter Loss를 메인 메트릭으로 사용)
-        metrics, _, _ = trainer.validate(curr_w)
-        val_param_error = metrics["loss_param"]
+        # 검증
+        # [FIX] validate가 4개의 값을 반환함 (metrics, p_pred, r_recon, log_r_obs)
+        val_metrics, _, _, _ = trainer.validate(curr_w)
+        
+        # Optimize Target: Param Loss + KL Loss (Total Validation Loss)
+        # 물리적 적합도도 중요하지만, 파라미터 정확도가 HPO에서는 더 직관적일 수 있음
+        target_metric = val_metrics["loss"] 
         
         # Pruning check
-        trial.report(val_param_error, epoch)
+        trial.report(target_metric, epoch)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
             
-        best_metric = min(best_metric, val_param_error)
-        epoch_pbar.set_postfix(mae=f"{val_param_error:.4f}", best=f"{best_metric:.4f}")
+        best_metric = min(best_metric, target_metric)
+        epoch_pbar.set_postfix(loss=f"{target_metric:.4f}", best=f"{best_metric:.4f}")
 
     return best_metric
 
@@ -98,7 +125,7 @@ if __name__ == "__main__":
         storage=storage_url,
         direction="minimize",
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=3)
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5)
     )
 
     completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
@@ -116,7 +143,7 @@ if __name__ == "__main__":
 
     print("\n" + "="*60)
     try:
-        print(f"🏆 BEST (Param MAE): {study.best_value:.6f}")
+        print(f"🏆 BEST (Val Loss): {study.best_value:.6f}")
         print("Params:", study.best_params)
         
         # Best Config 저장
@@ -129,20 +156,29 @@ if __name__ == "__main__":
             from xrefine.config import CONFIG
             best_cfg = CONFIG.model_copy(deep=True)
             
-        # Apply Best Params (Only Optimized Ones)
-        best_cfg.model.encoder_depth = best_params.get("enc_depth", best_cfg.model.encoder_depth)
-        best_cfg.model.n_channels = best_params.get("n_channels", best_cfg.model.n_channels)
-        best_cfg.model.kernel_size = best_params.get("kernel_size", best_cfg.model.kernel_size)
-        best_cfg.model.hidden_dim = best_params.get("hidden_dim", best_cfg.model.hidden_dim)
-        
-        best_cfg.train.batch_size = best_params.get("batch_size", best_cfg.train.batch_size)
-        best_cfg.train.sup_w_end = best_params.get("sup_w_end", best_cfg.train.sup_w_end)
-        
-        best_cfg.augmentations.intensity_noise_scale = best_params.get("intensity_noise", best_cfg.augmentations.intensity_noise_scale)
+        # Apply Best Params (Generic Mapping)
+        # Config 구조가 복잡하므로 키 이름 매핑 필요
+        mapping = {
+            'hidden_dim': ('model', 'hidden_dim'),
+            'enc_depth': ('model', 'encoder_depth'),
+            'n_heads': ('model', 'n_heads'),
+            'dim_feedforward': ('model', 'dim_feedforward'),
+            'dropout': ('model', 'dropout'),
+            'fourier_scale': ('model', 'fourier_scale'),
+            'batch_size': ('train', 'batch_size'),
+            'lr': ('train', 'lr'),
+            'phys_penalty_w': ('train', 'phys_penalty_w'),
+            'intensity_noise': ('augmentations', 'intensity_noise_scale')
+        }
+
+        for param_name, (section, key) in mapping.items():
+            if param_name in best_params:
+                # getattr(best_cfg, section) -> best_cfg.model
+                # setattr(..., key, value)
+                setattr(getattr(best_cfg, section), key, best_params[param_name])
 
         # Save
-        with open("best_hpo_config.yaml", 'w', encoding='utf-8') as f:
-            yaml.dump(best_cfg.model_dump(mode='json'), f, sort_keys=False)
+        best_cfg.save_yaml("best_hpo_config.yaml")
             
     except ValueError:
         logger.warning("No completed trials found in the database yet.")

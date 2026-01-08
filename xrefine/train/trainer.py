@@ -42,6 +42,8 @@ class XRefineTrainer:
             epochs=config.train.epochs,
             pct_start=0.1
         )
+        # [FIX] OneCycleLR 경고 방지: dummy optimizer step 수행
+        self.optimizer.step()
         self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
 
         # 경로 및 로거 설정
@@ -173,7 +175,7 @@ class XRefineTrainer:
             "loss_param": loss_param.item() if isinstance(loss_param, torch.Tensor) else loss_param,
             "kl_loss": kl_loss
         }
-        return metrics, p_pred, r_recon
+        return metrics, p_pred, r_recon, log_r_obs
 
     def fit(self, resume: bool = False):
         if resume:
@@ -186,7 +188,7 @@ class XRefineTrainer:
             curr_w = self._get_curriculum_weight(epoch)
             
             avg_train_loss = self.train_epoch(epoch, curr_w)
-            val_metrics, v_pred, v_recon = self.validate(curr_w)
+            val_metrics, v_pred, v_recon, v_target = self.validate(curr_w)
             val_loss = val_metrics["loss"]
             
             self.history["train_loss"].append(avg_train_loss)
@@ -206,9 +208,14 @@ class XRefineTrainer:
 
             if epoch % 20 == 0:
                 save_pinn_report(
-                    self.q_grid, torch.log10(v_recon[0:1]), v_recon[0:1], 
-                    self.history["train_loss"], v_pred, None, 
-                    self.save_dir / f"report_E{epoch:03d}.png", step=epoch
+                    self.q_grid, 
+                    v_target[0:1],  # [FIX] 진짜 정답 데이터 전달
+                    v_recon[0:1], 
+                    self.history["train_loss"], 
+                    v_pred, 
+                    None,  # p_true는 validate에서 받아오지 않았으므로 None (또는 추가 반환)
+                    self.save_dir / f"report_E{epoch:03d}.png", 
+                    step=epoch
                 )
 
             logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | KL: {val_metrics.get('kl_loss', 0):.4f} | Best: {self.best_val_loss:.4f}")

@@ -30,3 +30,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu126" }]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

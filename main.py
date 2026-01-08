@@ -1,5 +1,4 @@
 import argparse
-import torch
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -58,38 +57,41 @@ def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[
         target[parts[-1]] = val
     return config_dict
 
-def print_config_summary(config: XRefineConfig):
+def format_config_summery(config: XRefineConfig) -> str:
     """현재 세션의 핵심 파라미터 요약 출력"""
+    lines: list[str] = []
     line = "=" * 60
-    logger.info(f"\n{line}\n[PRE-FLIGHT CHECK: SESSION CONFIGURATION]\n{line}")
+    lines.append(f"\n{line}\n[PRE-FLIGHT CHECK: SESSION CONFIGURATION]\n{line}")
     
-    logger.info(f"Experiment : {config.experiment_name}")
-    logger.info(f"Model Type : {config.model.model_type.upper()}")
-    logger.info(f"Device     : {config.device}")
+    lines.append(f"Experiment : {config.experiment_name}")
+    lines.append(f"Model Type : {config.model.model_type.upper()}")
+    lines.append(f"Device     : {config.device}")
     
-    logger.info(f"{'-'*60}")
-    logger.info(f"{'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")
-    logger.info(f"{'-'*60}")
-    logger.info(f"{'Training':<12} | {'LR':<15} | {config.train.lr:.1e}")
-    logger.info(f"{'Training':<12} | {'Batch Size':<15} | {config.train.batch_size}")
-    logger.info(f"{'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
+    lines.append(f"{'-'*60}")
+    lines.append(f"{'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")
+    lines.append(f"{'-'*60}")
+    lines.append(f"{'Training':<12} | {'LR':<15} | {config.train.lr:.1e}")
+    lines.append(f"{'Training':<12} | {'Batch Size':<15} | {config.train.batch_size}")
+    lines.append(f"{'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
     
     # 모델 타입에 따른 파라미터 출력 분기
     if config.model.model_type == 'transformer':
-        logger.info(f"{'Model':<12} | {'Hidden Dim':<15} | {config.model.hidden_dim}")
-        logger.info(f"{'Model':<12} | {'Enc Depth':<15} | {config.model.encoder_depth}")
-        logger.info(f"{'Model':<12} | {'Heads':<15} | {config.model.n_heads}")
+        lines.append(f"{'Model':<12} | {'Hidden Dim':<15} | {config.model.hidden_dim}")
+        lines.append(f"{'Model':<12} | {'Enc Depth':<15} | {config.model.encoder_depth}")
+        lines.append(f"{'Model':<12} | {'Heads':<15} | {config.model.n_heads}")
     else:
-        logger.info(f"{'Model':<12} | {'Mapping Size':<15} | {config.model.mapping_size}")
-        logger.info(f"{'Model':<12} | {'Fourier Scale':<15} | {config.model.fourier_scale}")
+        lines.append(f"{'Model':<12} | {'Mapping Size':<15} | {config.model.mapping_size}")
+        lines.append(f"{'Model':<12} | {'Fourier Scale':<15} | {config.model.fourier_scale}")
     
-    logger.info(f"{'-'*60}")
-    logger.info(f"Physics Ranges (d_f) : {config.ranges.d_f} [Å]")
-    logger.info(f"{line}\n")
+    lines.append(f"{'-'*60}")
+    lines.append(f"Physics Ranges (d_f) : {config.ranges.d_f} [Å]")
+    lines.append(f"{line}\n")
+
+    return "\n".join(lines)
 
 def run_train(config: XRefineConfig, resume: bool):
     """학습 세션 실행"""
-    print_config_summary(config)
+    logger.info("\n" + format_config_summery(config))
     
     save_dir = config.save_root / config.experiment_name
     save_dir.mkdir(parents=True, exist_ok=True)

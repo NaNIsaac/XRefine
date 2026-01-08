@@ -163,7 +163,7 @@ class XRR_Fourier_PINN(nn.Module):
         params = self._unnormalize(out.float())
 
         # 2. 물리 파라미터 조립
-        thickness, roughness, sld_full = params.assemble_structure(self.config.ranges.substrate_sld)
+        thickness, roughness, sld_full = params.assemble_structure()
         
         # 3. 시뮬레이션 준비
         batch_size = out.size(0)
@@ -209,7 +209,7 @@ class XRR_Fourier_PINN(nn.Module):
         device = self.device
         params.to(device)
 
-        thickness, roughness, sld_full = params.assemble_structure(self.config.ranges.substrate_sld)
+        thickness, roughness, sld_full = params.assemble_structure()
         
         q_batch = self.q_grid.unsqueeze(0).expand(thickness.size(0), -1).to(device)
         

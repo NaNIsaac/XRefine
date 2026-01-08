@@ -218,7 +218,7 @@ class XRR_Transformer_PINN(nn.Module):
             q_batch = q_batch + params.tth_offset * 0.01
 
         # Structure Assembly
-        thickness, roughness, sld_full = params.assemble_structure(self.config.ranges.substrate_sld)
+        thickness, roughness, sld_full = params.assemble_structure()
         
         # 4. Run Simulator
         r_sim = self.simulator(
@@ -246,7 +246,7 @@ class XRR_Transformer_PINN(nn.Module):
         device = self.device
         params.to(device)
         
-        thickness, roughness, sld_full = params.assemble_structure(self.config.ranges.substrate_sld)
+        thickness, roughness, sld_full = params.assemble_structure()
         q_batch = self.q_grid.unsqueeze(0).expand(thickness.size(0), -1).to(device)
         
         if hasattr(params, 'tth_offset'):

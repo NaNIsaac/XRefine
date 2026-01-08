@@ -316,68 +316,88 @@ def run_real_inference(
     data_path: str, 
     output_dir: str = "./results",
     refine_config: RefinementConfig = None,
-    q_cutoff: float = None  # None이면 자동 감지
+    q_cutoff: float = None
 ) -> ParamSet:
-    """실제 데이터 추론 및 피팅 (Smart Cutoff 포함)"""
-    # 1. 모델 로드
+    """실제 데이터 추론 및 피팅"""
     import pathlib
-    temp = pathlib.PosixPath
-    pathlib.PosixPath = pathlib.WindowsPath
-    try:
-        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    except:
-        pathlib.PosixPath = temp
-        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    finally:
-        pathlib.PosixPath = temp
-
-    xrr_config = XRefineConfig(**ckpt['config'])
-    xrr_config.ranges = CONFIG.ranges
+    # Windows/Linux 경로 호환성 처리
+    torch.serialization.add_safe_globals([pathlib.WindowsPath, pathlib.PosixPath, XRefineConfig])
     
-    model = XRR_Fourier_PINN(config=xrr_config).to(xrr_config.device)
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    # Config 로드 및 최신화
+    if isinstance(ckpt['config'], dict):
+        xrr_config = XRefineConfig(**ckpt['config'])
+    else:
+        xrr_config = ckpt['config']
+    
+    # Range나 장비 설정은 최신 CONFIG로 덮어쓰는 것이 안전함 (선택 사항)
+    # xrr_config.ranges = CONFIG.ranges 
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    xrr_config.device = device # 강제 업데이트
+
+    # [FIX] 모델 타입에 따른 인스턴스화
+    model_type = getattr(xrr_config.model, 'model_type', 'cnn').lower()
+    
+    if model_type == 'transformer':
+        logger.info("🏗️ Loading Model Type: Transformer-VAE")
+        model = XRR_Transformer_PINN(config=xrr_config).to(device)
+    else:
+        logger.info("🏗️ Loading Model Type: Fourier-CNN")
+        model = XRR_Fourier_PINN(config=xrr_config, device=device).to(device)
+
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
 
-    if refine_config is None:
-        refine_config = DEFAULT_CONFIG
+    if refine_config is None: refine_config = DEFAULT_CONFIG
 
-    # 2. 데이터 로드 (순수 데이터)
+    # 데이터 로드
     input_tensor = load_real_data(data_path, xrr_config)
     q_grid_np = xrr_config.q_grid.numpy()
     
-    # 3. [핵심] 피팅 시작 전 Cutoff 감지 및 데이터 마스킹
-    #    AI는 전체 데이터를 보고 힌트를 얻지만, Optimizer는 노이즈를 보지 말아야 함.
-    
-    # (A) Cutoff 결정
+    # Smart Cutoff
     if q_cutoff is None:
-        # 자동 감지
         log_y_np = input_tensor.squeeze().cpu().numpy()
-
         detected_cutoff = auto_detect_cutoff(q_grid_np, log_y_np)
         actual_cutoff = detected_cutoff
-        logger.info(f"🤖 Auto-Cutoff Detected: Q > {actual_cutoff:.3f} A^-1 (Noise Floor Removed)")
+        logger.info(f"🤖 Auto-Cutoff Detected: Q > {actual_cutoff:.3f} A^-1")
     else:
-        # 수동 지정
         actual_cutoff = q_cutoff
         logger.info(f"✂️ Manual Cutoff Applied: Q > {actual_cutoff:.3f} A^-1")
 
-    # (B) Config에 반영 (모든 스테이지가 이 값을 참조)
     refine_config.q_cutoff = actual_cutoff
 
-    # (C) 텐서 마스킹 (물리적으로 값 제거 -> -15.0)
-    #     이렇게 하면 Optimizer나 Loss Function이 이 영역을 무시함
+    # Masking
     mask_indices = q_grid_np > actual_cutoff
     masked_input = input_tensor.clone()
     masked_input[0, mask_indices] = -15.0
 
-    # 4. AI 추론
-    p_ai, r_ai, _ = model(masked_input.to(xrr_config.device))
+    # AI 추론 (VAE 출력 처리 포함)
+    masked_input_gpu = masked_input.to(device)
+    
+    # Transformer는 tuple을 반환하므로 첫 번째 값(Params)만 취함
+    out = model(masked_input_gpu)
+    if isinstance(out, tuple):
+        if model_type == 'transformer':
+            # (params, r_sim, (mu, logvar))
+            p_ai = out[0]
+            r_ai = out[1]
+        else:
+            # (params, r_sim, penalty)
+            p_ai = out[0]
+            r_ai = out[1]
+    else:
+        # 혹시 모를 단일 반환 대비
+        p_ai = out
 
-    # 5. Refinement 실행 (마스킹된 텐서 전달)
+    # Refinement 실행
     p_refined = run_refinement(model, p_ai, masked_input, xrr_config, refine_config)
 
-    # 6. 최종 결과 저장
-    _, r_final, _ = model.forward_with_params(p_refined.to(xrr_config.device))
+    # 최종 결과 시뮬레이션
+    # Refinement된 파라미터로 최종 그래프 생성
+    # forward_with_params는 (params, r_sim, penalty) 형태 반환
+    _, r_final, _ = model.forward_with_params(p_refined.to(device))
     
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -385,12 +405,12 @@ def run_real_inference(
     data_name = Path(data_path).stem
     fig_path = output_path / f"{data_name}_fit_{datetime.now().strftime('%H%M%S')}.png"
 
+    # Normalize for plotting
     r_final_norm = r_final / (r_final.max() + 1e-12)
     r_ai_norm = r_ai / (r_ai.max() + 1e-12)
 
-    # 시각화 시에는 원본 데이터(input_tensor)와 Cutoff 라인을 같이 표시
     _save_plot(xrr_config, input_tensor[0], r_ai_norm[0], r_final_norm[0], 
-        data_name, fig_path, p_refined, q_cutoff=actual_cutoff)
+       data_name, fig_path, p_refined, q_cutoff=actual_cutoff)
 
     logger.info(f"✨ 완료. 결과 저장됨: {fig_path}")
     print("Refined Params:", p_refined)

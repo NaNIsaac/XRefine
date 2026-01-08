@@ -165,6 +165,8 @@ class ParamSet:
     beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
     dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # Resolution [Å⁻¹]
     tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # 2θ offset [°]
+    rho_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics'})   # Substrate SLD
+    sig_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics'})   # Substrate roughness [Å]
 
     @classmethod
     def names(cls) -> List[str]:
@@ -220,7 +222,7 @@ class ParamSet:
             for k, v in self.items()
         })
 
-    def assemble_structure(self, substrate_sld: float) -> tuple[Tensor, Tensor, Tensor]:
+    def assemble_structure(self) -> tuple[Tensor, Tensor, Tensor]:
         """
         물리 시뮬레이션을 위한 텐서 조립
         [FIX] Ambient 층을 명시적으로 추가하여 차원 불일치 해결
@@ -234,12 +236,11 @@ class ParamSet:
         thickness = torch.cat([ambient_thick, self.d_f, self.d_ox], dim=-1).float()
         
         # 2. Roughness: [Amb/Film, Film/Ox, Ox/Sub] -> Size 3 (Interfaces)
-        roughness = torch.cat([self.sig_f, self.sig_ox, self.sig_ox], dim=-1).float()
+        roughness = torch.cat([self.sig_f, self.sig_ox, self.sig_sub], dim=-1).float()
         
         # 3. SLD: [Ambient, Film, Oxide, Substrate] -> Size 4
         ambient_sld = torch.zeros((batch_size, 1), device=device)
-        substrate = torch.full((batch_size, 1), substrate_sld, device=device)
-        sld = torch.cat([ambient_sld, self.rho_f, self.rho_ox, substrate], dim=-1).float()
+        sld = torch.cat([ambient_sld, self.rho_f, self.rho_ox, self.rho_sub], dim=-1).float()
         
         return thickness, roughness, sld
 

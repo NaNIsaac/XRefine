@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 from dataclasses import fields
 from tqdm import tqdm
 
-from xrefine.models import XRR_Fourier_PINN
+from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.config import XRefineConfig
@@ -28,7 +28,7 @@ class XRREvaluator:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         self.config: Optional[XRefineConfig] = None
-        self.model: Optional[XRR_Fourier_PINN] = None
+        self.model = None # Type depends on config
         self.results_df: Optional[pd.DataFrame] = None
         self.sample_metrics: Optional[pd.DataFrame] = None 
         self.metrics_summary: Dict[str, Dict] = {}
@@ -38,20 +38,45 @@ class XRREvaluator:
         logger.info(f"🔍 Initializing Evaluator from {self.checkpoint_path}...")
         import pathlib
         torch.serialization.add_safe_globals([pathlib.WindowsPath, pathlib.PosixPath, XRefineConfig])
-        ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
-        
-        match ckpt.get('config'):
-            case dict() as d: self.config = XRefineConfig(**d)
-            case XRefineConfig() as c: self.config = c
-            case _: raise ValueError("Invalid config format")
 
-        self.model = XRR_Fourier_PINN(config=self.config, device=self.device).to(self.device)
+        # 1. 체크포인트 로드
+        ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+
+        # 2. Config 복원 (여기서 100k 설정이 불러와짐)
+        match ckpt.get('config'):
+            case dict() as d:
+                self.config = XRefineConfig(**d)
+            case XRefineConfig() as c:
+                self.config = c
+            case _:
+                raise ValueError("Invalid config format in checkpoint")
+
+        # =================================================================
+        # [FIX] 프로젝트 전역 설정(CONFIG)으로 강제 덮어쓰기 (핵심!)
+        # 체크포인트에 저장된 q_len(100000)을 무시하고 현재 설정(2000)을 주입함
+        # =================================================================
+        from xrefine.config import CONFIG
+        
+        self.config.q_len = CONFIG.q_len           # 2000
+        self.config.q_min_tth = CONFIG.q_min_tth
+        self.config.q_max_tth = CONFIG.q_max_tth
+        
+        # Grid 재생성 및 할당 (Setter가 동작하여 내부 변수 업데이트)
+        self.config.q_grid = CONFIG.q_grid.clone().to(self.device)
+        # =================================================================
+
+        # 3. 모델 로드
+        model_type = getattr(self.config.model, 'model_type', 'cnn').lower()
+        
+        if model_type == 'transformer':
+            self.model = XRR_Transformer_PINN(config=self.config).to(self.device)
+        else:
+            self.model = XRR_Fourier_PINN(config=self.config, device=self.device).to(self.device)
+
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.model.eval()
         
-        if history := ckpt.get('history'):
-            plot_learning_curves(history, self.exp_dir / "eval_learning_curves.png")
-        logger.info(f"✅ Setup complete. N_Layers: {self.config.model.n_layers}")
+        logger.info(f"Setup complete. Grid forced to {self.config.q_len} points.")
 
     @torch.no_grad()
     def run_inference(self) -> Tuple[torch.Tensor, ParamSet, ParamSet, torch.Tensor]:
@@ -59,20 +84,35 @@ class XRREvaluator:
         q_grid = self.config.q_grid.to(self.device)
         augmentor = XRRAugmentor(self.config).to(self.device)
         
-        split_size = 50
+        split_size = 50 # OOM 방지용 작은 배치
         num_iters = self.batch_size // split_size
+        if self.batch_size % split_size != 0: num_iters += 1
+        
         r_m_list, r_r_list, p_t_list, p_p_list = [], [], [], []
 
         for _ in tqdm(range(num_iters), desc="Running Inference"):
+            # Generator는 CPU/GPU 호환되게 설계됨
             r_m, p_t = generate_synthetic_batch(split_size, q_grid, self.config, augmenter=augmentor)
+            
+            # GPU 이동
+            r_m = r_m.to(self.device)
+            p_t.to(self.device)
+            
             log_r_in = torch.log10(torch.clamp(r_m, min=1e-11))
-            p_p, r_r, _ = self.model(log_r_in)
+            
+            # Forward Pass (Tuple Unpacking 처리)
+            # Transformer: (p, r, (mu, logvar, penalty))
+            # CNN: (p, r, penalty)
+            out = self.model(log_r_in)
+            p_p, r_r = out[0], out[1] # 첫 두 개는 항상 Params, Recon
 
-            r_m_list.append(r_m.cpu())
-            r_r_list.append(r_r.cpu())
-            p_t_list.append(p_t)
-            p_p_list.append(p_p)
+            r_m_list.append(r_m.to("cpu"))
+            r_r_list.append(r_r.to("cpu"))
+            p_t_list.append(p_t.to("cpu"))
+            p_p_list.append(p_p.to("cpu"))
 
+        # Concatenate Results
+        # ParamSet.cat 구현에 의존
         return torch.cat(r_m_list), ParamSet.cat(p_t_list), ParamSet.cat(p_p_list), torch.cat(r_r_list)
 
     def calculate_statistics(self, r_t: torch.Tensor, r_r: torch.Tensor, p_t: ParamSet, p_p: ParamSet):
@@ -83,21 +123,31 @@ class XRREvaluator:
         log_t = torch.log10(torch.clamp(r_t, min=1e-11))
         log_r = torch.log10(torch.clamp(r_r, min=1e-11))
         mse_per_sample = torch.mean((log_t - log_r)**2, dim=1).numpy()
-        self.sample_metrics = pd.DataFrame({'idx': np.arange(self.batch_size), 'log_mse': mse_per_sample})
+        
+        # Clip batch size if needed (last batch might be smaller)
+        actual_size = len(mse_per_sample)
+        self.sample_metrics = pd.DataFrame({'idx': np.arange(actual_size), 'log_mse': mse_per_sample})
 
         # 2. Parameter Accuracy
         all_res = []
-        for fld in fields(ParamSet):
-            key = fld.name
-            y_t = getattr(p_t, key).detach().cpu().numpy().flatten()
-            y_p = getattr(p_p, key).detach().cpu().numpy().flatten()
+        for fld in ParamSet.names():
+            key = fld
+            # Detach and convert to numpy
+            val_t = getattr(p_t, key)
+            val_p = getattr(p_p, key)
+            
+            if isinstance(val_t, torch.Tensor): val_t = val_t.detach().cpu().numpy()
+            if isinstance(val_p, torch.Tensor): val_p = val_p.detach().cpu().numpy()
+            
+            y_t = val_t.flatten()
+            y_p = val_p.flatten()
             
             err = y_p - y_t
-            # evaluate.py의 calculate_statistics 내부
+            
             self.metrics_summary[key] = {
                 "MAE": np.mean(np.abs(err)),
                 "MAPE": np.mean(np.abs(err) / (np.abs(y_t) + 1e-9)) * 100,
-                "RMSE": np.sqrt(np.mean(err**2)),  # <--- 이 줄이 있는지 확인!
+                "RMSE": np.sqrt(np.mean(err**2)),
                 "R2": 1 - (np.sum(err**2) / (np.sum((y_t - np.mean(y_t))**2) + 1e-9))
             }
             all_res.append(pd.DataFrame({'Parameter': key, 'True': y_t, 'Pred': y_p, 'Error': err, 'AbsError': np.abs(err)}))
@@ -110,62 +160,98 @@ class XRREvaluator:
         q_np = q.cpu().numpy()
         sns.set_theme(style="whitegrid", palette="muted")
 
-        # --- Chart 1: The "Classic" Correlation Matrix ---
-        # 1:1 산점도를 통해 전체적인 예측 경향성 확인
+        # --- Chart 1: Correlation Matrix ---
         keys = list(self.metrics_summary.keys())
-        fig1, axes1 = plt.subplots(2, len(keys), figsize=(4 * len(keys), 8))
+        n_cols = 4 # 한 줄에 4개씩
+        n_rows = (len(keys) + n_cols - 1) // n_cols
+        
+        fig1, axes1 = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes1 = axes1.flatten()
+        
         for i, key in enumerate(keys):
+            if i >= len(axes1): break
             sub = self.results_df[self.results_df['Parameter'] == key]
-            axes1[0, i].scatter(sub['True'], sub['Pred'], alpha=0.15, s=6, color='#2c3e50')
+            
+            ax = axes1[i]
+            ax.scatter(sub['True'], sub['Pred'], alpha=0.15, s=6, color='#2c3e50')
+            
             mi, ma = min(sub['True'].min(), sub['Pred'].min()), max(sub['True'].max(), sub['Pred'].max())
-            axes1[0, i].plot([mi, ma], [mi, ma], 'r--', lw=1.5)
-            axes1[0, i].set_title(f"{key}\n$R^2$: {self.metrics_summary[key]['R2']:.3f}", fontsize=12, fontweight='bold')
-            sns.histplot(sub['Error'], ax=axes1[1, i], color='#27ae60', kde=True)
-            axes1[1, i].axvline(0, color='black', lw=1)
+            ax.plot([mi, ma], [mi, ma], 'r--', lw=1.5)
+            
+            r2 = self.metrics_summary[key]['R2']
+            ax.set_title(f"{key}\nR²: {r2:.3f}", fontsize=11, fontweight='bold')
+            ax.tick_params(axis='both', which='major', labelsize=8)
+            
         plt.tight_layout()
         plt.savefig(self.exp_dir / "report_correlation_matrix.png", dpi=150)
+        plt.close()
 
-        # --- Chart 2: Ranked Performance (Best to Worst) ---
-        # 물리적 적합도에 따른 대표 케이스 추출
-        sorted_idx = self.sample_metrics.sort_values('log_mse')['idx'].values
-        target_idx = [sorted_idx[0], sorted_idx[len(sorted_idx)//2], sorted_idx[int(len(sorted_idx)*0.85)], sorted_idx[-1]]
-        titles = ["Best (Exemplary Fit)", "Median (Typical Case)", "Struggling (Challenging Case)", "Worst (Critical Failure)"]
-        
-        fig2 = plt.figure(figsize=(18, 11))
-        gs = gridspec.GridSpec(2, 2, hspace=0.3, wspace=0.22)
-        for i, (idx, title) in enumerate(zip(target_idx, titles)):
-            s_gs = gridspec.GridSpecFromSubplotSpec(2, 1, gs[i], height_ratios=[3, 1], hspace=0.05)
-            ax_t, ax_b = fig2.add_subplot(s_gs[0]), fig2.add_subplot(s_gs[1])
-            yt, yr = r_t[idx].numpy(), r_r[idx].numpy()
-            mse = self.sample_metrics.iloc[idx]['log_mse']
+        # --- Chart 2: Ranked Performance ---
+        if self.sample_metrics is not None and not self.sample_metrics.empty:
+            sorted_idx = self.sample_metrics.sort_values('log_mse')['idx'].values
+            n_samples = len(sorted_idx)
             
-            ax_t.semilogy(q_np, yt, 'ko', ms=2.5, alpha=0.1, label='Actual')
-            ax_t.semilogy(q_np, yr, 'r-', lw=1.8, label='XRefine Fit')
-            ax_t.set_title(f"{title} | MSE: {mse:.5f}", fontsize=13, loc='left')
-            if i == 0: ax_t.legend()
+            # Select 4 representative cases
+            target_idx = [
+                sorted_idx[0], 
+                sorted_idx[n_samples//2], 
+                sorted_idx[int(n_samples*0.85)], 
+                sorted_idx[-1]
+            ]
+            titles = ["Best Fit", "Median Fit", "Top 15% Error", "Worst Fit"]
             
-            res = np.log10(np.clip(yr, 1e-11, None)) - np.log10(np.clip(yt, 1e-11, None))
-            ax_b.plot(q_np, res, color='#2980b9', lw=1); ax_b.axhline(0, color='black', ls='--', alpha=0.5)
-            ax_b.set_ylim(-0.4, 0.4)
-            ax_b.set_ylabel("$\\Delta$ LogR", fontsize=9)
-        plt.savefig(self.exp_dir / "report_ranked_cases.png", dpi=200)
+            fig2 = plt.figure(figsize=(18, 11))
+            gs = gridspec.GridSpec(2, 2, hspace=0.3, wspace=0.22)
+            
+            for i, (idx, title) in enumerate(zip(target_idx, titles)):
+                s_gs = gridspec.GridSpecFromSubplotSpec(2, 1, gs[i], height_ratios=[3, 1], hspace=0.05)
+                ax_t, ax_b = fig2.add_subplot(s_gs[0]), fig2.add_subplot(s_gs[1])
+                
+                yt, yr = r_t[idx].numpy(), r_r[idx].numpy()
+                mse = self.sample_metrics.iloc[idx]['log_mse']
+                
+                ax_t.semilogy(q_np, yt, 'ko', ms=2.5, alpha=0.3, label='Observed')
+                ax_t.semilogy(q_np, yr, 'r-', lw=1.5, alpha=0.9, label='Predicted')
+                ax_t.set_title(f"{title} | Log-MSE: {mse:.5f}", fontsize=12, loc='left', fontweight='bold')
+                if i == 0: ax_t.legend()
+                ax_t.grid(True, which='both', alpha=0.2)
+                
+                # Residuals
+                res = np.log10(np.clip(yr, 1e-12, None)) - np.log10(np.clip(yt, 1e-12, None))
+                ax_b.plot(q_np, res, color='#2980b9', lw=1)
+                ax_b.axhline(0, color='black', ls='--', alpha=0.5)
+                ax_b.set_ylim(-0.5, 0.5)
+                ax_b.set_ylabel("Error (Log)", fontsize=9)
+                ax_b.grid(True, alpha=0.2)
+                
+            plt.savefig(self.exp_dir / "report_ranked_cases.png", dpi=200)
+            plt.close()
 
-        # --- Chart 3: Parameter Entanglement Heatmap ---
-        plt.figure(figsize=(11, 9))
-        df_corr = self.results_df.pivot(columns='Parameter', values='Pred').corr()
-        sns.heatmap(df_corr, annot=True, fmt=".2f", cmap='RdBu_r', center=0, square=True)
-        plt.title("Parameter Dependency Analysis (Entanglement)", fontsize=14)
-        plt.tight_layout()
-        plt.savefig(self.exp_dir / "report_entanglement_heatmap.png")
-        plt.close('all')
+        # --- Chart 3: Entanglement Heatmap ---
+        # Limit correlation calculation to numerical columns only
+        try:
+            plt.figure(figsize=(12, 10))
+            pivot_df = self.results_df.pivot(columns='Parameter', values='Pred')
+            # 같은 인덱스끼리만 상관관계를 봐야 하므로 인덱스 정렬 필요할 수 있음 (concat 순서대로임)
+            
+            df_corr = pivot_df.corr()
+            mask = np.triu(np.ones_like(df_corr, dtype=bool))
+            
+            sns.heatmap(df_corr, annot=True, fmt=".2f", cmap='RdBu_r', center=0, 
+                        square=True, mask=mask, cbar_kws={"shrink": .8})
+            plt.title("Parameter Entanglement (Correlation of Predictions)", fontsize=14)
+            plt.tight_layout()
+            plt.savefig(self.exp_dir / "report_entanglement_heatmap.png")
+            plt.close()
+        except Exception as e:
+            logger.warning(f"Skipping heatmap generation due to error: {e}")
 
     def report(self):
-        """콘솔 출력용 리포트"""
-        line = "=" * 88
-        logger.info(f"\n{line}\n{'Parameter':<18} | {'MAE':<10} | {'MAPE(%)':<10} | {'RMSE':<10} | {'R2 Score':<10}\n{'-' * 88}")
+        lines = [f"{'Parameter':<18} | {'MAE':<10} | {'MAPE(%)':<10} | {'RMSE':<10} | {'R2 Score':<10}\n{'-' * 95}"]
         for k, v in self.metrics_summary.items():
-            logger.info(f"{k:<18} | {v['MAE']:<10.4f} | {v['MAPE']:<10.2f} | {v.get('RMSE', 0):<10.4f} | {v['R2']:<10.4f}")
-        logger.info(f"{line}\n")
+            lines.append(f"{k:<18} | {v['MAE']:<10.4f} | {v['MAPE']:<10.2f} | {v.get('RMSE', 0):<10.4f} | {v['R2']:<10.4f}")
+        lines.append("=" * 95)
+        logger.info("\n"+"\n".join(lines))
 
     def evaluate_all(self):
         """단일 진입점: 전체 파이프라인 자동 실행"""
