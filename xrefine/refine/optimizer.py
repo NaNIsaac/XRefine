@@ -99,14 +99,21 @@ def optimize_step(
                 # 1급 객체 Loss 함수 호출
                 loss = loss_fn(r_sim, log_r_obs_gpu, mask)
                 
-                # Physical Constraints
-                r_pen = 0.0
-                if p_set.sig_f.item() > (p_set.d_f.item() / 2.0):
-                    r_pen += 100.0 + (p_set.sig_f.item() - p_set.d_f.item()/2.0) * 10.0
-                if p_set.sig_ox.item() > (p_set.d_ox.item() / 2.0):
-                    r_pen += 100.0 + (p_set.sig_ox.item() - p_set.d_ox.item()/2.0) * 10.0
+                # ========== Minimal Physical Penalties ==========
+                phys_penalty = 0.0
+                sig_f = p_set.sig_f.item()
+                sig_ox = p_set.sig_ox.item()
+                d_ox = p_set.d_ox.item()
                 
-                return float((loss + penalty + r_pen).item())
+                # [1] Roughness 상한 페널티 (σ_f > 15Å 이면 페널티)
+                if sig_f > 15.0:
+                    phys_penalty += 1.0 * (sig_f - 15.0) ** 2
+                
+                # [2] Oxide roughness는 oxide 두께의 50% 넘으면 비물리적
+                if sig_ox > d_ox * 0.5 and d_ox > 5.0:
+                    phys_penalty += 10.0
+                
+                return float((loss + penalty + phys_penalty).item())
                 
         except Exception as e:
             return 1e9

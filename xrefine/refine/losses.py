@@ -154,3 +154,63 @@ LINEAR_MSE = linear_mse_loss
 CORRELATION = correlation_loss
 LOG_MSE_WITH_GRAD = make_combined_loss(log_mse_loss, gradient=True)
 LINEAR_MSE_WITH_GRAD = make_combined_loss(linear_mse_loss, gradient=True)
+
+
+def make_fringe_weighted_loss(
+    base_loss: LossFn = log_mse_loss,
+    fringe_q_range: tuple = (0.05, 0.25),
+    fringe_weight: float = 3.0,
+    high_q_damping: float = 0.3
+) -> LossFn:
+    """
+    프린지 영역 가중치 Loss 생성
+    
+    중간각도(프린지 선명) 영역에 높은 가중치, 고각도(노이즈 플로어) 낮은 가중치
+    
+    Args:
+        base_loss: 기본 loss 함수
+        fringe_q_range: 프린지 영역 Q 범위 (min, max)
+        fringe_weight: 프린지 영역 가중치 (>1 = 강조)
+        high_q_damping: 고각도 가중치 감소율 (<1)
+    
+    Returns:
+        Q-weighted loss function
+    """
+    def weighted_loss(r_sim: Tensor, log_r_obs: Tensor, mask: Tensor) -> Tensor:
+        # 기본 loss 계산을 위한 요소별 오차
+        log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
+        
+        # Pointwise error
+        if base_loss == linear_mse_loss:
+            r_obs = 10 ** log_r_obs
+            error = (r_sim - r_obs) ** 2
+        else:
+            error = (log_r_sim - log_r_obs) ** 2
+        
+        # Q grid 추정 (mask 길이에서)
+        n_points = mask.shape[-1]
+        q_estimated = torch.linspace(0.0, 0.5, n_points, device=mask.device)
+        
+        # Q-based weights
+        q_min, q_max = fringe_q_range
+        weights = torch.ones_like(q_estimated)
+        
+        # 프린지 영역 강조 (Q_min ~ Q_max)
+        fringe_mask = (q_estimated >= q_min) & (q_estimated <= q_max)
+        weights[fringe_mask] = fringe_weight
+        
+        # 고각도 감쇠 (Q > Q_max)
+        high_q_mask = q_estimated > q_max
+        weights[high_q_mask] = high_q_damping
+        
+        # Weighted loss
+        weighted_error = error * weights * mask
+        return torch.sum(weighted_error) / (torch.sum(mask * weights) + 1e-9)
+    
+    return weighted_loss
+
+
+# Fringe-weighted presets
+FRINGE_WEIGHTED_LOG = make_fringe_weighted_loss(log_mse_loss)
+FRINGE_WEIGHTED_LINEAR = make_fringe_weighted_loss(linear_mse_loss)
+

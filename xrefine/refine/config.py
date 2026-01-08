@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from typing import Set, Optional, List, Callable, Any
 from xrefine.refine.losses import (
     LossFn, log_mse_loss, linear_mse_loss, correlation_loss,
-    LOG_MSE, LINEAR_MSE, CORRELATION, LOG_MSE_WITH_GRAD
+    LOG_MSE, LINEAR_MSE, CORRELATION, LOG_MSE_WITH_GRAD,
+    FRINGE_WEIGHTED_LOG, FRINGE_WEIGHTED_LINEAR
 )
 
 
@@ -126,22 +127,22 @@ class RefinementConfig:
                 description="Linear R로 프린지 진폭 맞추기"
             ),
             
-            # Stage 3: Log R Fine-Tuning
+            # Stage 3: Fringe-Weighted Fine-Tuning (프린지 영역 강조)
             StageConfig(
-                name="Log R Fine-Tuning",
+                name="Fringe-Weighted Tuning",
                 optimize_keys={'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox', 'L', 'i0', 'bkg', 'dq'},
-                loss_fn=LOG_MSE,
+                loss_fn=FRINGE_WEIGHTED_LOG,  # 중간각도 프린지 강조, 고각도 노이즈 무시
                 maxiter=100, popsize=30,
-                description="Log R로 전체 형상 미세 조정"
+                description="프린지 영역(Q=0.05~0.25) 집중 최적화"
             ),
             
-            # Stage 4: Thickness Fine-Tuning
+            # Stage 4: Thickness Fine-Tuning (프린지 강조)
             StageConfig(
                 name="Thickness Fine-Tuning",
                 optimize_keys={'d_f', 'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox', 'L', 'i0', 'bkg', 'dq'},
-                loss_fn=LOG_MSE,
+                loss_fn=FRINGE_WEIGHTED_LOG,  # 프린지 유지하면서 두께 조정
                 maxiter=50, popsize=20,
-                description="좁은 범위에서 두께 미세 조정"
+                description="좁은 범위에서 두께 미세 조정 (프린지 유지)"
             ),
             
             # Stage 5: Background 재조정 (물리 파라미터 고정)

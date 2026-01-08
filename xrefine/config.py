@@ -42,7 +42,7 @@ class PhysicalRangeConfig(BaseModel):
     rho_f: Tuple[float, float] = (5.0, 100.0)
     
     # Oxide Layer
-    d_ox: Tuple[float, float] = (5.0, 50.0)
+    d_ox: Tuple[float, float] = (0.0, 50.0)
     sig_ox: Tuple[float, float] = (0.5, 10.0)
     rho_ox: Tuple[float, float] = (14.0, 20.0)
     
