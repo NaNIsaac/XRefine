@@ -1,8 +1,8 @@
 import torch
 import yaml
 from pathlib import Path
-from typing import Literal, Self, Tuple
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Literal, Self, Tuple, Optional
+from pydantic import BaseModel, Field, ConfigDict, field_validator, field_serializer
 
 from xrefine.physics_utils import tth2q
 from xrefine.core.structures import ParamSet
@@ -25,36 +25,40 @@ class AugmentationConfig(BaseModel):
 
 # 3. 모델 아키텍처 설정
 class ModelArchConfig(BaseModel):
-    encoder_depth: int = 6
-    n_channels: int = 128
+    model_type: Literal['cnn', 'transformer'] = 'transformer'
+    
+    # 공통 하이퍼파라미터
+    hidden_dim: int = 128       # Transformer: d_model / CNN: Base Channels
+    encoder_depth: int = 4      # Transformer: Layers / CNN: Depth
+    
+    # CNN 전용 (Fourier PINN)
     kernel_size: int = 15
     dilation: int = 2
     fourier_scale: float = 40.0
     mapping_size: int = 64
-    hidden_dim: int = 1024
-    n_layers: int = 1
+    
+    # Transformer 전용 (Phys-VAE)
+    n_heads: int = 4            # Attention Heads
+    dim_feedforward: int = 512  # FFN expansion
+    dropout: float = 0.1
+    activation: str = 'gelu'
+    n_layers: int = 1 # Number of film layers
 
-# 4. 물리 파라미터 샘플링 범위 (Source of Truth for ParamSet)
+# 4. 물리 파라미터 샘플링 범위
 class PhysicalRangeConfig(BaseModel):
-    # Main Film
     d_f: Tuple[float, float] = (10.0, 1000.0)
     sig_f: Tuple[float, float] = (0.5, 20.0)
     rho_f: Tuple[float, float] = (5.0, 100.0)
-    
-    # Oxide Layer
     d_ox: Tuple[float, float] = (0.0, 50.0)
     sig_ox: Tuple[float, float] = (0.5, 10.0)
     rho_ox: Tuple[float, float] = (14.0, 20.0)
-    
-    # Instrumental
-    L: Tuple[float, float] = (5.0, 25.0)  # Expanded range for better footprint fitting
+    L: Tuple[float, float] = (5.0, 25.0)
     beam_width: Tuple[float, float] = (0.01, 0.3)
     bkg: Tuple[float, float] = (-9.0, -5.0)
     i0: Tuple[float, float] = (0.8, 1.2)
-    dq: Tuple[float, float] = (0.0005, 0.01)  # Resolution [Å⁻¹]
-    tth_offset: Tuple[float, float] = (-0.05, 0.05)  # 2θ offset [°]
-    
-    substrate_sld: float = 20.1  # Fixed [10^-6 Å^-2]
+    dq: Tuple[float, float] = (0.0005, 0.01)
+    tth_offset: Tuple[float, float] = (-0.05, 0.05)
+    substrate_sld: float = 20.1
 
 # 5. 파라미터별 손실 함수 가중치
 class WeightConfig(BaseModel):
@@ -69,11 +73,10 @@ class WeightConfig(BaseModel):
     bkg: float = 1.0
     beam_width: float = 10.0
     dq: float = 1.0
-    tth_offset: float = 5.0  # Offset is critical for low-q
+    tth_offset: float = 5.0
 
 # 6. 학습 프로세스 하이퍼파라미터
 class TrainingConfig(BaseModel):
-    # 기초 하이퍼파라미터
     batch_size: int = 64
     lr: float = 5e-4
     weight_decay: float = 1e-4
@@ -81,35 +84,46 @@ class TrainingConfig(BaseModel):
     steps_per_epoch: int = 100
     warmup_steps: int = 1000
     
-    # Curriculum Learning & Physics Loss 제어
-    sup_w_start: float = 100.0    # 초기 파라미터 지도 학습 가중치
-    sup_w_end: float = 2000.0     # 최종 파라미터 지도 학습 가중치
-    phys_penalty_w: float = 10.0  # 물리적 제약 조건(Penalty) 가중치
+    sup_w_start: float = 100.0
+    sup_w_end: float = 2000.0
+    phys_penalty_w: float = 10.0
     
-    # 파라미터별 개별 가중치 통합
     weights: WeightConfig = Field(default_factory=WeightConfig)
 
 # 7. 프로젝트 통합 설정 (Root Config)
 class XRefineConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
 
-    # 경로 및 환경
-    experiment_name: str = 'XRefine_v2_Calibrated'
+    experiment_name: str = 'XRefine_Transformer_v1'
     save_root: Path = Path(r"C:\Warehouse\data\XRR_AI\PINN")
     log_dir: Path = Path("./logs")
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # torch.device 타입 필드
+    device: torch.device = Field(
+        default_factory=lambda: torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    )
 
-    # 측정 그리드 설정
     q_min_tth: float = 0.05
     q_max_tth: float = 12.0
     q_len: int = 2000
 
-    # 서브 설정 객체들
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
     ranges: PhysicalRangeConfig = Field(default_factory=PhysicalRangeConfig)
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
     train: TrainingConfig = Field(default_factory=TrainingConfig)
     model: ModelArchConfig = Field(default_factory=ModelArchConfig)
+
+    # [FIX 1] 입력된 문자열('cuda')을 torch.device 객체로 자동 변환
+    @field_validator('device', mode='before')
+    def parse_device(cls, v):
+        if isinstance(v, str):
+            return torch.device(v)
+        return v
+
+    # [FIX 2] 직렬화(저장) 시 torch.device 객체를 문자열로 자동 변환 (에러 해결 핵심)
+    @field_serializer('device')
+    def serialize_device(self, device: torch.device, _info):
+        return str(device)
 
     @property
     def q_grid(self) -> torch.Tensor:
@@ -117,26 +131,25 @@ class XRefineConfig(BaseModel):
         q_end = tth2q(self.q_max_tth, self.instrument.wavelength)
         return torch.linspace(q_start, q_end, self.q_len)
 
-    def get_weight_set(self, device: str = 'cpu') -> ParamSet:
-        """학습 시 ParamSet 형태로 가중치를 즉시 활용하기 위한 팩토리 메서드"""
+    def get_weight_set(self, device: torch.device = None) -> ParamSet:
+        if device is None: device = self.device
         w = self.train.weights
         return ParamSet(
             **{k: torch.tensor(v, device=device) for k, v in w.model_dump().items()}
         )
 
     def save_yaml(self, path: str | Path):
-        """현재 설정을 YAML로 직렬화하여 저장"""
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # serializer 덕분에 이제 model_dump(mode='json')이 에러 없이 작동함
         with open(save_path, 'w', encoding='utf-8') as f:
             yaml.dump(self.model_dump(mode='json'), f, sort_keys=False)
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> Self:
-        """YAML 파일로부터 설정 복원"""
         with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
         return cls(**data)
 
-# 전역 설정 인스턴스
 CONFIG = XRefineConfig()

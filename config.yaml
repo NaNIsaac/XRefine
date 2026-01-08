@@ -1,6 +1,9 @@
+# XRefine Configuration File
+# ==========================
+
 # [General Settings]
-experiment_name: "v1"
-save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
+experiment_name: "test"
+save_root: "C:\\Warehouse\\data\\XRR_AI\\transformer"
 log_dir: "logs"
 device: "cuda"
 
@@ -25,10 +28,15 @@ ranges:
   d_ox: [1.0, 50.0]
   sig_ox: [0.5, 10.0]
   rho_ox: [14.0, 20.0]
+  
+  # Instrumental Ranges
   L: [9.0, 15.0]
   beam_width: [0.01, 0.3]
   bkg: [-9.0, -4.0]
   i0: [0.8, 1.2]
+  dq: [0.0005, 0.01]        # Resolution [A^-1]
+  tth_offset: [-0.05, 0.05] # 2theta offset [deg]
+  
   substrate_sld: 20.1
 
 # [Augmentation Config]
@@ -42,32 +50,51 @@ augmentations:
 # [Training Hyperparameters]
 train:
   batch_size: 64
-  lr: 0.0005177043421596389
+  lr: 0.0005177
+  weight_decay: 1.0e-4
   epochs: 300
   steps_per_epoch: 100
+  warmup_steps: 1000
+  
+  # Curriculum & Physics Loss
   sup_w_start: 10000.0
   sup_w_end: 2000.0
-  phys_penalty_w: 0.8578632881974889
+  phys_penalty_w: 0.8579
 
+  # Parameter-specific Weights
   weights:
     d_f: 3.0
     sig_f: 3.0
     rho_f: 3.0
-    d_ox: 2
-    sig_ox: 1
-    rho_ox: 2
+    d_ox: 2.0
+    sig_ox: 1.0
+    rho_ox: 2.0
     i0: 3.0
     bkg: 1.0
     L: 2.0
-    beam_width: 2
+    beam_width: 2.0
+    dq: 1.0
+    tth_offset: 5.0
 
 # [Model Architecture]
 model:
-  encoder_depth: 6
-  n_channels: 128
+  # --- Core Setting ---
+  model_type: "transformer"  # Options: "transformer" or "cnn"
+  
+  # --- Common ---
+  hidden_dim: 128       # Transformer: d_model / CNN: Base Channels
+  encoder_depth: 4      # Transformer: Layers  / CNN: Depth
+  fourier_scale: 43.0   # Fourier Feature Scale (Highly Sensitive)
+  mapping_size: 64      # Fourier Dimension
+  n_layers: 1           # Number of film layers
+  
+  # --- Transformer Specific ---
+  n_heads: 4
+  dim_feedforward: 512
+  dropout: 0.1
+  activation: "gelu"
+  
+  # --- CNN Specific (Legacy Support) ---
   kernel_size: 21
   dilation: 2
-  fourier_scale: 42.99665209061587
-  mapping_size: 64
-  hidden_dim: 1024
-  n_layers: 1
+  n_channels: 128

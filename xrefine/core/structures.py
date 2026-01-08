@@ -166,6 +166,24 @@ class ParamSet:
     dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # Resolution [Å⁻¹]
     tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # 2θ offset [°]
 
+    @classmethod
+    def names(cls) -> List[str]:
+        """
+        인스턴스 생성 없이 필드 이름 목록을 반환합니다.
+        외부에서 keys = ['d_f', ...] 하드코딩 대신 ParamSet.names() 사용 가능.
+        """
+        return [f.name for f in fields(cls)]
+
+    @classmethod
+    def physics_names(cls) -> List[str]:
+        """물리 파라미터 이름만 반환"""
+        return [f.name for f in fields(cls) if f.metadata.get('type') == 'physics']
+
+    @classmethod
+    def instrument_names(cls) -> List[str]:
+        """기기 파라미터 이름만 반환"""
+        return [f.name for f in fields(cls) if f.metadata.get('type') == 'instrument']
+
     def keys(self) -> Iterator[str]:
         """필드 이름들에 대한 iterator 반환"""
         return (f.name for f in fields(self))
@@ -203,16 +221,25 @@ class ParamSet:
         })
 
     def assemble_structure(self, substrate_sld: float) -> tuple[Tensor, Tensor, Tensor]:
+        """
+        물리 시뮬레이션을 위한 텐서 조립
+        [FIX] Ambient 층을 명시적으로 추가하여 차원 불일치 해결
+        """
         device = self.d_f.device
         batch_size = self.d_f.shape[0]
         
-        thickness = torch.cat([self.d_f, self.d_ox], dim=-1).float()
-        #의 물리 구조 일관성 유지
+        # 1. Thickness: [Ambient(0), Film, Oxide] -> Size 3
+        # Abeles 알고리즘은 0번 레이어를 Ambient로 가정하므로 0.0 추가 필수
+        ambient_thick = torch.zeros((batch_size, 1), device=device)
+        thickness = torch.cat([ambient_thick, self.d_f, self.d_ox], dim=-1).float()
+        
+        # 2. Roughness: [Amb/Film, Film/Ox, Ox/Sub] -> Size 3 (Interfaces)
         roughness = torch.cat([self.sig_f, self.sig_ox, self.sig_ox], dim=-1).float()
         
-        ambient = torch.zeros((batch_size, 1), device=device)
+        # 3. SLD: [Ambient, Film, Oxide, Substrate] -> Size 4
+        ambient_sld = torch.zeros((batch_size, 1), device=device)
         substrate = torch.full((batch_size, 1), substrate_sld, device=device)
-        sld = torch.cat([ambient, self.rho_f, self.rho_ox, substrate], dim=-1).float()
+        sld = torch.cat([ambient_sld, self.rho_f, self.rho_ox, substrate], dim=-1).float()
         
         return thickness, roughness, sld
 
