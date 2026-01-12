@@ -102,7 +102,14 @@ class XRefineTrainer:
         self.model.train()
         total_loss = 0.0  # [FIX] 변수명 통일 (기존 total_loss_avg -> total_loss)
         steps = self.cfg.train.steps_per_epoch
-        pbar = tqdm(range(steps), desc=f"Epoch {epoch:03d}", leave=False)
+        pbar = tqdm(
+            range(steps), 
+            desc=f"Epoch {epoch:03d}", 
+            leave=False,
+            total=steps,         # 명시적 total
+            ncols=100,           # 바 너비 고정
+            ascii=" >="          # ASCII 바 문자 (호환성)
+        )
         
         for step in pbar:
             # 1. 데이터 생성
