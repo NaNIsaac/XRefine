@@ -101,6 +101,7 @@ class XRRAugmentor(nn.Module):
     def forward(self, q: torch.Tensor, R: torch.Tensor, params: ParamSet) -> torch.Tensor:
         """[Pipeline] Sampling -> Smearing -> Scaling -> Noise -> Masking"""
         B, Q = R.shape
+        n_q = Q
         device = R.device
         
         # 0. NaN 방어
