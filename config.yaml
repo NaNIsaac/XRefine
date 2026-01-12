@@ -60,8 +60,8 @@ train:
   warmup_steps: 1000
   
   # Curriculum & Physics Loss
-  sup_w_start: 10000.0
-  sup_w_end: 2000.0
+  sup_w_start: 1000.0
+  sup_w_end: 1
   phys_penalty_w: 0.8579
 
   # Parameter-specific Weights
