@@ -1,8 +1,8 @@
-# XRefine Configuration File (v2.1 - Universal)
-# ===============================================
+# XRefine Configuration File (v2.2 - Hierarchical Weighting)
+# ============================================================
 
 # [General Settings]
-experiment_name: "XRefine_ViT_Universal_v1"
+experiment_name: "XRefine_ViT_Universal_v2"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
@@ -21,37 +21,35 @@ instrument:
   Ibkg_init: 1.0e-07
 
 # =============================================================================
-# [Sample Configuration] - Universal 2-Layer Model
+# [Sample Configuration]
 # =============================================================================
 sample:
   # 1. Global / Instrumental Parameters
-  L: [5.0, 20.0]             # Sample Length [mm]
-  beam_width: [0.01, 0.2]    # Effective Beam Width [mm]
-  bkg: [-9.0, -5.0]          # Log10 Background (Broad range)
-  i0: [0.8, 1.2]             # Intensity Scale
-  dq: [0.0005, 0.005]        # Resolution [A^-1]
-  tth_offset: [-0.02, 0.02]  # Slight alignment error
+  L: [5.0, 20.0]
+  beam_width: [0.01, 0.2]
+  bkg: [-9.0, -5.0]
+  i0: [0.8, 1.2]
+  dq: [0.0005, 0.005]
+  tth_offset: [-0.02, 0.02]
 
-  # 2. Substrate (Si-like but flexible)
+  # 2. Substrate
   substrate:
     name: "Substrate"
     roughness: [0.0, 5.0]
-    sld: [18.0, 22.0]        # Around Si (20.1)
+    sld: [18.0, 22.0]
 
-  # 3. Layers (Ordered Top to Bottom)
+  # 3. Layers (Top -> Bottom)
   layers:
-    # Top Layer (e.g. Surface Oxide, Contamination, or Thin Cap)
-    - name: "Layer1"
-      thickness: [5.0, 100.0]   # Wide range for thin films
+    - name: "Top_Layer"       # Thin Top Layer (Oxide/Contam)
+      thickness: [5.0, 100.0]
       roughness: [0.0, 10.0]
-      sld: [0.0, 80.0]          # Covers organics to metals
+      sld: [0.0, 80.0]
       repeats: 1
 
-    # Main Film
-    - name: "Layer2"
-      thickness: [50.0, 1500.0] # Covers most thin films
+    - name: "Target_Film"     # Thick Main Film (Target)
+      thickness: [50.0, 1500.0]
       roughness: [0.0, 20.0]
-      sld: [5.0, 100.0]         # Full material range
+      sld: [5.0, 100.0]
       repeats: 1
 
 # [Augmentation Config]
@@ -76,20 +74,27 @@ train:
   sup_w_end: 100.0
   phys_penalty_w: 1.0
 
-  # Loss Component Weights
   w_linear: 20.0
   w_gradient: 50.0
   w_log_base: 50.0
   
-  # Parameter Weights (Dynamic Lookup)
+  # Parameter Weights
   weights:
-    # Applied to every layer with these attributes
+    # 1. Base Layer Weights (Default importance)
     layer_weights:
-      thickness: 50.0  # Thickness is critical!
+      thickness: 10.0
       roughness: 1.0
-      sld: 10.0
+      sld: 5.0
     
-    # Applied to global/instrument params
+    # 2. Specific Layer Overrides (Target Focused!)
+    specific_layer_weights:
+      Target_Film:
+        thickness: 100.0  # Main Film Thickness is MOST important
+        sld: 20.0         # Main Film Density is important
+      Top_Layer:
+        thickness: 1.0    # Top layer thickness is less critical
+        roughness: 0.5    # Top roughness is hard to distinguish from Sub roughness
+    
     global_weights:
       i0: 1.0
       bkg: 1.0

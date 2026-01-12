@@ -42,10 +42,8 @@ class XRREvaluator:
         """Load checkpoint and initialize model."""
         logger.info(f"🔍 Initializing Evaluator from {self.checkpoint_path}...")
         
-        # Load checkpoint
         ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         
-        # Restore Config
         config_data = ckpt.get('config')
         if isinstance(config_data, dict):
             self.config = XRefineConfig(**config_data)
@@ -54,7 +52,6 @@ class XRREvaluator:
             
         self.config.q_grid = self.config.q_grid.to(self.device)
         
-        # Initialize Model using Factory
         self.model = get_model(self.config).to(self.device)
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.model.eval()
@@ -102,7 +99,6 @@ class XRREvaluator:
         self.sample_metrics = pd.DataFrame({'idx': np.arange(actual_size), 'log_mse': mse_per_sample})
         
         all_res = []
-        # Dynamic keys from ParamSet
         keys = list(p_t._params.keys())
         
         for key in keys:
@@ -122,33 +118,58 @@ class XRREvaluator:
         self.results_df = pd.concat(all_res)
         self.results_df.to_csv(self.exp_dir / "eval_metrics_full.csv", index=False)
 
+    def _split_params(self) -> Tuple[List[str], List[str]]:
+        """Separate Core Physics parameters from Instrument/Nuisance parameters."""
+        keys = sorted(list(self.metrics_summary.keys()))
+        core_keywords = ['thickness', 'roughness', 'sld']
+        
+        core_keys = [k for k in keys if any(c in k for c in core_keywords)]
+        inst_keys = [k for k in keys if k not in core_keys]
+        
+        return core_keys, inst_keys
+
+    def save_correlation_plots(self):
+        """Save separate correlation plots for Core and Instrument parameters."""
+        core_keys, inst_keys = self._split_params()
+        
+        for group_name, keys in [("Physics", core_keys), ("Instrument", inst_keys)]:
+            if not keys: continue
+            
+            n_cols = 4
+            n_rows = (len(keys) + n_cols - 1) // n_cols
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+            axes = axes.flatten()
+            
+            for i, key in enumerate(keys):
+                sub = self.results_df[self.results_df['Parameter'] == key]
+                ax = axes[i]
+                
+                # Scatter
+                ax.scatter(sub['True'], sub['Pred'], alpha=0.15, s=6, color='#2c3e50')
+                
+                # Identity Line
+                mi, ma = min(sub['True'].min(), sub['Pred'].min()), max(sub['True'].max(), sub['Pred'].max())
+                ax.plot([mi, ma], [mi, ma], 'r--', lw=1.5)
+                
+                r2 = self.metrics_summary[key]['R2']
+                # Shorten title
+                title_key = key.replace("thickness", "d").replace("roughness", "sig").replace("sld", "rho")
+                ax.set_title(f"{title_key}\nR²: {r2:.3f}", fontsize=10)
+                
+            # Hide empty axes
+            for j in range(i + 1, len(axes)):
+                axes[j].axis('off')
+                
+            plt.tight_layout()
+            plt.savefig(self.exp_dir / f"report_corr_{group_name.lower()}.png", dpi=150)
+            plt.close()
+
     def save_visual_report(self, q: torch.Tensor, r_t: torch.Tensor, r_r: torch.Tensor):
-        """Generate plots for correlation, ranked cases, and entanglement."""
+        """Generate plots for ranked cases."""
         q_np = q.cpu().numpy()
         sns.set_theme(style="whitegrid")
         
-        # 1. Correlation Matrix
-        keys = sorted(list(self.metrics_summary.keys()))
-        n_cols = 4
-        n_rows = (len(keys) + n_cols - 1) // n_cols
-        
-        fig1, axes1 = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
-        axes1 = axes1.flatten()
-        
-        for i, key in enumerate(keys):
-            sub = self.results_df[self.results_df['Parameter'] == key]
-            ax = axes1[i]
-            ax.scatter(sub['True'], sub['Pred'], alpha=0.15, s=6, color='#2c3e50')
-            mi, ma = min(sub['True'].min(), sub['Pred'].min()), max(sub['True'].max(), sub['Pred'].max())
-            ax.plot([mi, ma], [mi, ma], 'r--', lw=1.5)
-            r2 = self.metrics_summary[key]['R2']
-            ax.set_title(f"{key}\nR²: {r2:.3f}", fontsize=10)
-            
-        plt.tight_layout()
-        plt.savefig(self.exp_dir / "report_correlation_matrix.png", dpi=150)
-        plt.close()
-
-        # 2. Ranked Cases
+        # Ranked Cases
         if self.sample_metrics is not None:
             sorted_idx = self.sample_metrics.sort_values('log_mse')['idx'].values
             n_samples = len(sorted_idx)
@@ -172,19 +193,59 @@ class XRREvaluator:
             plt.savefig(self.exp_dir / "report_ranked_cases.png", dpi=200)
             plt.close()
 
+    def save_training_curves(self):
+        """Recovered: Plot training history."""
+        if not self.history or 'train_loss' not in self.history:
+            logger.warning("No training history found.")
+            return
+            
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Loss
+        ax1 = axes[0]
+        ax1.plot(self.history['train_loss'], label='Train')
+        if 'val_loss' in self.history:
+            ax1.plot(self.history['val_loss'], label='Val')
+        ax1.set_yscale('log')
+        ax1.set_title("Loss Curves")
+        ax1.legend()
+        
+        # LR / Weight
+        ax2 = axes[1]
+        ax2_r = ax2.twinx()
+        if 'lr' in self.history:
+            ax2.plot(self.history['lr'], 'g-', label='LR')
+        if 'sup_weight' in self.history:
+            ax2_r.plot(self.history['sup_weight'], 'm--', label='Sup. Weight')
+            
+        ax2.set_title("Training Dynamics")
+        ax2.set_xlabel("Epochs")
+        
+        plt.tight_layout()
+        plt.savefig(self.exp_dir / "report_learning_curve.png", dpi=150)
+        plt.close()
+
     def report(self):
         """Print summary report to log."""
         header = f"{'{Parameter':<25} | {'MAE':<10} | {'MAPE(%)':<10} | {'R2 Score':<10}"
         logger.info("\n" + header + "\n" + "-" * 65)
-        for k, v in self.metrics_summary.items():
-            logger.info(f"{k:<25} | {v['MAE']:<10.4f} | {v['MAPE']:<10.2f} | {v['R2']:<10.4f}")
+        
+        # Sort keys so Core params come first
+        core_keys, inst_keys = self._split_params()
+        
+        for k in core_keys + inst_keys:
+            v = self.metrics_summary[k]
+            prefix = "[*] " if k in core_keys else "    "
+            logger.info(f"{prefix}{k:<21} | {v['MAE']:<10.4f} | {v['MAPE']:<10.2f} | {v['R2']:<10.4f}")
 
     def evaluate_all(self):
         """Run full evaluation pipeline."""
         rm, pt, pp, rr = self.run_inference()
         self.calculate_statistics(rm, rr, pt, pp)
         self.report()
+        self.save_correlation_plots() # Split into Physics / Instrument
         self.save_visual_report(self.config.q_grid, rm, rr)
+        self.save_training_curves()   # Recovered
         
         logger.info("\n" + "="*60)
         logger.info(f"✅ Evaluation Complete!")

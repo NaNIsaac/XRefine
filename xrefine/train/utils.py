@@ -109,9 +109,15 @@ class XRRWeightedLoss(nn.Module):
             
             # Parse key: "LayerName.attr" or "GlobalParam"
             if '.' in key:
-                _, attr = key.split('.', 1)
-                # Look up generic layer weight (e.g. "thickness")
-                w_val = config.train.weights.layer_weights.get(attr, 1.0)
+                layer_name, attr = key.split('.', 1)
+                
+                # 1. Check Specific Override (e.g. Layer2.thickness)
+                specific_map = config.train.weights.specific_layer_weights.get(layer_name, {})
+                if attr in specific_map:
+                    w_val = specific_map[attr]
+                else:
+                    # 2. Check Generic Layer Weight (e.g. thickness)
+                    w_val = config.train.weights.layer_weights.get(attr, 1.0)
             else:
                 # Look up global weight (e.g. "i0")
                 w_val = config.train.weights.global_weights.get(key, 1.0)

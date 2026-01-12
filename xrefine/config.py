@@ -117,6 +117,8 @@ class WeightConfig(BaseModel):
     layer_weights: dict[str, float] = Field(
         default={"thickness": 1.0, "roughness": 1.0, "sld": 1.0}
     )
+    # [New] Specific Layer Overrides: {'LayerName': {'thickness': 50.0}}
+    specific_layer_weights: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 class TrainingConfig(BaseModel):
     batch_size: int = 64
