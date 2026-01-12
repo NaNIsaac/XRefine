@@ -65,7 +65,7 @@ train:
   phys_penalty_w: 0.8579
 
   # Loss Component Weights (Reconstruction)
-  w_linear: 10.0       # 100 → 10 (Linear 영향력 감소)
+  w_linear: 1.0       # 100 → 10 (Linear 영향력 감소)
   w_gradient: 50.0     # Fringe 패턴/두께 집중
   w_log_base: 50.0     # 10 → 50 (Log 기반 손실 강화)
 
