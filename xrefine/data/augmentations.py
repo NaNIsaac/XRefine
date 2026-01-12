@@ -48,38 +48,54 @@ class XRRAugmentor(nn.Module):
 
     def apply_resampling(self, R: torch.Tensor) -> torch.Tensor:
         """
-        [Resampling Augmentation]
-        Angular Resolution (Step Size) 기반으로 측정 포인트 수를 가변적으로 시뮬레이션.
+        [Improved Resampling] Grouped Downsampling
+        배치를 여러 그룹으로 나누어 서로 다른 해상도를 적용하여 학습 다양성 확보.
+        
+        개선 사항:
+        1. 배치를 4개 그룹으로 나눠 각기 다른 해상도 적용 (Batch Diversity)
+        2. 20% 확률로 원본 유지 (Skip Chance)
+        3. target_len이 Q를 초과하지 않도록 안전 처리
         """
         B, Q = R.shape
-        # Config에서 각도 범위(2theta) 가져오기
-        tth_max = self.cfg.q_max_tth
-        tth_min = self.cfg.q_min_tth
-        total_angle = tth_max - tth_min
+        device = R.device
         
+        # 1. 원본 유지 확률 (20% Skip)
+        # 고해상도 데이터 학습 능력 유지
+        if torch.rand(1, device=device) < 0.2:
+            return R
+
+        # 2. Config 범위
         step_min, step_max = self.aug_cfg.measure_step_range
+        total_angle = self.cfg.q_max_tth - self.cfg.q_min_tth
         
-        # Random Step Size Sampling (Uniform Distribution)
-        # step_size ~ U(min, max)
-        step_size = (torch.rand(1, device=R.device) * (step_max - step_min)) + step_min
-        
-        # Calculate target number of points
-        # N = Total Angle / Step Size
-        target_len_float = total_angle / step_size
-        target_len = int(target_len_float.item())
-        
-        # Safety Check (최소 10포인트 이상)
-        target_len = max(target_len, 10)
-        
-        # 1. Downsample (Simulation of coarse measurement)
-        # interpolate expects (B, C, L)
-        R_in = R.unsqueeze(1) 
-        R_coarse = F.interpolate(R_in, size=target_len, mode='linear', align_corners=True)
-        
-        # 2. Upsample (Back to model grid)
-        R_recon = F.interpolate(R_coarse, size=Q, mode='linear', align_corners=True)
-        
-        return R_recon.squeeze(1)
+        # 3. 그룹 나누기 (배치가 작으면 통으로 처리)
+        num_groups = 4 if B >= 4 else 1
+        chunks = torch.chunk(R, num_groups, dim=0)
+        results = []
+
+        for chunk in chunks:
+            # 그룹별 랜덤 스텝 사이즈
+            step_size = (torch.rand(1, device=device) * (step_max - step_min)) + step_min
+            
+            # 목표 길이 계산 (Q 길이를 초과하지 않도록 min 처리)
+            target_len = int((total_angle / step_size).item())
+            target_len = max(min(target_len, Q), 10)  # 10 < len <= Q
+
+            # (1) Downsample (정보 손실 유도)
+            chunk_in = chunk.unsqueeze(1)
+            chunk_coarse = F.interpolate(
+                chunk_in, size=target_len, mode='linear', align_corners=True
+            )
+
+            # (2) Upsample (모델 입력 크기 복원)
+            chunk_recon = F.interpolate(
+                chunk_coarse, size=Q, mode='linear', align_corners=True
+            )
+            
+            results.append(chunk_recon.squeeze(1))
+
+        # 다시 하나의 배치로 합치기
+        return torch.cat(results, dim=0)
 
     @torch.no_grad()
     def forward(self, q: torch.Tensor, R: torch.Tensor, params: ParamSet) -> torch.Tensor:

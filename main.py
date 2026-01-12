@@ -5,14 +5,18 @@ from typing import List, Dict, Any
 from xrefine.config import XRefineConfig, CONFIG
 from xrefine.train import XRefineTrainer
 from xrefine.evaluate import XRREvaluator 
-from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN
+from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN, XRR_ViT_PINN
 from xrefine.logger import logger
 
 def get_model(config: XRefineConfig):
     """Config의 model_type에 따라 적절한 모델 인스턴스 반환"""
     model_type = config.model.model_type.lower()
     
-    if model_type == 'transformer':
+    if model_type == 'vit':
+        logger.info("Initializing Model: ViT PINN")
+        return XRR_ViT_PINN(config=config).to(config.device)
+    
+    elif model_type == 'transformer':
         logger.info("Initializing Model: Transformer-VAE PINN")
         return XRR_Transformer_PINN(config=config).to(config.device)
     
@@ -21,7 +25,7 @@ def get_model(config: XRefineConfig):
         return XRR_Fourier_PINN(config=config, device=config.device).to(config.device)
     
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Choose 'cnn' or 'transformer'.")
+        raise ValueError(f"Unknown model type: {model_type}. Choose 'vit', 'transformer', or 'cnn'.")
 
 def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[str, Any]:
     """CLI 인자를 계층적 dict로 변환 (config. 접두사 자동 처리)"""

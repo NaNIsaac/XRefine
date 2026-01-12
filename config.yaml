@@ -66,62 +66,46 @@ train:
 
   # Parameter-specific Weights
 weights:
-  # ==========================================
-  # [Tier 0] 절대 존엄 (Alignment & Scaling)
-  # ==========================================
-  # 축이 틀어지면 모든 물리 법칙이 깨집니다. 가장 강력하게 보정합니다.
-  i0: 1.0           # Y축 스케일 (Intensity). 전체 형상 결정.
 
-  # ==========================================
-  # [Tier 1] 핵심 타겟 (Target Parameters)
-  # ==========================================
-  # 우리가 XRR을 찍는 진짜 목적입니다.
-  d_f: 5.0          # 박막 두께 (Fringe 주기에 직결)
-  rho_f: 5.0        # 박막 밀도 (임계각 및 진폭 결정)
-  sig_f: 5.0        # 박막 거칠기 (Decay 기울기 결정)
-  d_ox: 1.0         # 산화막 두께 (얇아도 간섭 패턴에 영향 줌)
+  i0: 1.0
+  d_f: 5.0
+  rho_f: 5.0
+  sig_f: 5.0
+  d_ox: 1.0
 
-  # ==========================================
-  # [Tier 2] 보조 타겟 (Secondary)
-  # ==========================================
-  # 구분하기 어렵거나(Entanglement), 과적합 위험이 있는 변수들입니다.
-  rho_ox: 1.0       # 박막이 얇으면 밀도 구분이 매우 모호함
-  sig_ox: 1.0       # 가장 맞추기 힘든 변수. 너무 높이면 노이즈를 피팅함
-  bkg: 1.0          # 배경 노이즈 레벨 (로그 스케일이라 1.0이면 충분)
-  tth_offset: 1
-
-  # ==========================================
-  # [Tier 3] Nuisance Parameters (Ignore)
-  # ==========================================
-  # "입력은 랜덤하게 흔들지만, 맞췄는지 검사하지 않음"
-  # 모델이 이 값들에 의존하지 않고 두께를 맞추도록 강제합니다 (Robustness).
-  
-  # 1. 기판 (Substrate): 박막 밑에 있어 거의 안 보임
+  rho_ox: 1.0
+  sig_ox: 1.0
+  bkg: 1.0
+  tth_offset: 0
   rho_sub: 0.0      
   sig_sub: 0.0      
 
-  # 2. 기기 특성 (Instrument): 박막 물성과 섞이는(Degenerate) 변수들
-  dq: 0.0           # Resolution (거칠기와 구분이 안 됨 -> 무시)
-  L: 0.0            # Footprint (저각 영역만 영향 -> 무시)
-  beam_width: 0.0   # (상동)
+  dq: 0.0
+  L: 0.0
+  beam_width: 0.0
 
 # [Model Architecture]
 model:
   # --- Core Setting ---
-  model_type: "transformer"  # Options: "transformer" or "cnn"
+  model_type: "vit"  # Options: "vit", "transformer", or "cnn"
   
   # --- Common ---
-  hidden_dim: 256       # Transformer: d_model / CNN: Base Channels (128 -> 256)
-  encoder_depth: 6      # Transformer: Layers  / CNN: Depth (4 -> 6)
-  fourier_scale: 50.0   # Fourier Feature Scale (43 -> 50)
-  mapping_size: 96      # Fourier Dimension (64 -> 96)
+  hidden_dim: 256       # d_model (128 -> 256)
+  encoder_depth: 6      # Layers (4 -> 6)
   n_layers: 1           # Number of film layers
   
-  # --- Transformer Specific ---
-  n_heads: 8            # (4 -> 8)
-  dim_feedforward: 1024 # (512 -> 1024)
+  # --- ViT/Transformer Shared ---
+  n_heads: 8            # Attention Heads (4 -> 8)
+  dim_feedforward: 1024 # FFN expansion (512 -> 1024)
   dropout: 0.15         # (0.1 -> 0.15)
   activation: "gelu"
+  
+  # --- ViT Specific ---
+  patch_size: 16        # Each patch = 16 Q-points
+  
+  # --- Transformer Specific (Fourier Features) ---
+  fourier_scale: 50.0   # (43 -> 50)
+  mapping_size: 96      # (64 -> 96)
   
   # --- CNN Specific (Legacy Support) ---
   kernel_size: 21

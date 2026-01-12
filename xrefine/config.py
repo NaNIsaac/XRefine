@@ -26,11 +26,11 @@ class AugmentationConfig(BaseModel):
 
 # 3. 모델 아키텍처 설정
 class ModelArchConfig(BaseModel):
-    model_type: Literal['cnn', 'transformer'] = 'transformer'
+    model_type: Literal['cnn', 'transformer', 'vit'] = 'vit'  # Default: ViT
     
     # 공통 하이퍼파라미터
-    hidden_dim: int = 128       # Transformer: d_model / CNN: Base Channels
-    encoder_depth: int = 4      # Transformer: Layers / CNN: Depth
+    hidden_dim: int = 128       # d_model
+    encoder_depth: int = 4      # Number of Transformer layers
     
     # CNN 전용 (Fourier PINN)
     kernel_size: int = 15
@@ -38,12 +38,15 @@ class ModelArchConfig(BaseModel):
     fourier_scale: float = 40.0
     mapping_size: int = 64
     
-    # Transformer 전용 (Phys-VAE)
+    # Transformer/ViT 공통
     n_heads: int = 4            # Attention Heads
     dim_feedforward: int = 512  # FFN expansion
     dropout: float = 0.1
     activation: str = 'gelu'
-    n_layers: int = 1 # Number of film layers
+    n_layers: int = 1           # Number of film layers
+    
+    # ViT 전용
+    patch_size: int = 16        # Patch size for ViT embedding
 
 # 4. 물리 파라미터 샘플링 범위
 class PhysicalRangeConfig(BaseModel):
