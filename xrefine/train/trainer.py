@@ -28,12 +28,16 @@ def is_colab() -> bool:
 
 IN_COLAB = is_colab()
 
-# [FIX] Colab에서는 notebook tqdm 사용 (그래픽 바 표시)
+# tqdm 설정: 표준 tqdm 사용 (notebook 버전은 loguru와 충돌)
+from tqdm import tqdm
+
+# Colab에서 clear_output 사용 가능
 if IN_COLAB:
-    from tqdm.notebook import tqdm
     from IPython.display import clear_output
-else:
-    from tqdm.auto import tqdm
+
+def log_epoch(msg: str):
+    """tqdm과 충돌하지 않게 로그 출력"""
+    tqdm.write(msg)
 
 class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
@@ -265,9 +269,9 @@ class XRefineTrainer:
                         step=epoch
                     )
 
-                # Logging with more info
+                # Logging with more info (tqdm.write로 출력해서 프로그레스바와 충돌 방지)
                 lr_now = self.scheduler.get_last_lr()[0]
-                logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
+                log_epoch(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
 
                 # Early Stop Check
                 if patience > 0 and self.patience_counter >= patience:
