@@ -28,6 +28,7 @@ from xrefine.core.structures import ParamSet
 from xrefine.logger import logger
 
 from xrefine.refine.config import RefinementConfig, StageConfig, DEFAULT_CONFIG
+from xrefine.constants import LOG_MASK_VALUE, LOG_VALID_THRESHOLD
 from xrefine.refine.optimizer import optimize_step
 from xrefine.refine.losses import CORRELATION
 
@@ -37,7 +38,7 @@ def auto_detect_cutoff(q: np.ndarray, log_y: np.ndarray, window: int = 15, slope
     [Smart Cutoff] 유효 데이터(> -14.0) 내에서만 신호 끝자락을 탐색합니다.
     """
     # 1. [안전장치] 이미 -15.0으로 마스킹된 데이터(측정 범위 밖)는 탐색에서 제외
-    valid_indices = log_y > -14.0
+    valid_indices = log_y > LOG_VALID_THRESHOLD
     
     # 유효 데이터가 너무 적으면 그냥 Max 반환
     if valid_indices.sum() < window * 2:
@@ -87,7 +88,7 @@ def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
     log_y_interp = np.interp(q_target, x_raw, log_y_raw)
     
     # 측정 범위 밖 기본 마스킹
-    log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = -15.0
+    log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = LOG_MASK_VALUE
 
     return torch.from_numpy(log_y_interp).float().view(1, -1)
 
@@ -124,11 +125,11 @@ def grid_search_thickness(
     high_osc_mask = torch.from_numpy(high_oscillation).to(device)
 
     # 최종 마스크
-    mask = (log_r_obs_gpu > -14.0) & (q_grid > q_start) & (q_grid < q_end) & high_osc_mask
+    mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_start) & (q_grid < q_end) & high_osc_mask
 
     if mask.sum() < 30:
         logger.warning(f"Grid Search 유효 포인트 부족. 기본 범위({q_start:.2f}~{q_end:.2f}) 사용")
-        mask = (log_r_obs_gpu > -14.0) & (q_grid > q_start) & (q_grid < q_end)
+        mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_start) & (q_grid < q_end)
 
     logger.info(f"Grid Search Range: {q_start:.3f} ~ {q_end:.3f} A^-1 ({mask.sum().item()} pts)")
 
@@ -147,7 +148,7 @@ def grid_search_thickness(
 
     best_corr_loss = 1e9
     best_d = p_init.d_f.item()
-    c_scores = []s
+    c_scores = []
     m_scores = []
 
     for d_val in d_grid:
@@ -371,7 +372,7 @@ def run_real_inference(
     # Masking
     mask_indices = q_grid_np > actual_cutoff
     masked_input = input_tensor.clone()
-    masked_input[0, mask_indices] = -15.0
+    masked_input[0, mask_indices] = LOG_MASK_VALUE
 
     # AI 추론 (VAE 출력 처리 포함)
     masked_input_gpu = masked_input.to(device)
@@ -422,7 +423,7 @@ def _save_plot(config, y_meas_log, r_ai, r_ref, title, save_path, p_refined=None
     q = config.q_grid.numpy()
     y_meas = y_meas_log.cpu().numpy()
 
-    valid_mask = y_meas > -14.0
+    valid_mask = y_meas > LOG_VALID_THRESHOLD
     q_valid = q[valid_mask]
     y_valid = 10 ** y_meas[valid_mask]
     

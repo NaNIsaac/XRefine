@@ -376,10 +376,8 @@ def run_real_inference(checkpoint_path: str, data_path: str, output_dir: str = "
     loaded_config_dict = ckpt['config']
     config = XRefineConfig(**loaded_config_dict)
     
-    # [Range Override] 현재 코드의 최신 Range 적용 (Roughness 20.0 등)
-    from xrefine.config import CONFIG
-    config.ranges = CONFIG.ranges
-    logger.info(f"🔄 Range Config Overridden: sig_f max = {config.ranges.sig_f[1]}")
+    # [FIXED] 체크포인트 config를 그대로 사용 (ranges 포함)
+    # 기존: config.ranges = CONFIG.ranges (하드코딩 제거됨)
     
     model = XRR_Fourier_PINN(config=config).to(config.device)
     model.load_state_dict(ckpt['model_state_dict'])

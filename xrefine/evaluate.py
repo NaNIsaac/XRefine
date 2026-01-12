@@ -51,19 +51,9 @@ class XRREvaluator:
             case _:
                 raise ValueError("Invalid config format in checkpoint")
 
-        # =================================================================
-        # [FIX] 프로젝트 전역 설정(CONFIG)으로 강제 덮어쓰기 (핵심!)
-        # 체크포인트에 저장된 q_len(100000)을 무시하고 현재 설정(2000)을 주입함
-        # =================================================================
-        from xrefine.config import CONFIG
-        
-        self.config.q_len = CONFIG.q_len           # 2000
-        self.config.q_min_tth = CONFIG.q_min_tth
-        self.config.q_max_tth = CONFIG.q_max_tth
-        
-        # Grid 재생성 및 할당 (Setter가 동작하여 내부 변수 업데이트)
-        self.config.q_grid = CONFIG.q_grid.clone().to(self.device)
-        # =================================================================
+        # [FIX] 체크포인트 config를 그대로 사용 (q_len 포함)
+        # 체크포인트의 q_grid를 재생성하여 device에 올림
+        self.config.q_grid = self.config.q_grid.to(self.device)
 
         # 3. 모델 로드
         model_type = getattr(self.config.model, 'model_type', 'cnn').lower()

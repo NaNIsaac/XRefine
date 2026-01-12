@@ -6,7 +6,7 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from xrefine.config import CONFIG, XRefineConfig
+from xrefine.config import XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.train.utils import XRRWeightedLoss, save_pinn_report
@@ -16,7 +16,7 @@ from xrefine.logger import logger
 torch.backends.cudnn.benchmark = True
 
 class XRefineTrainer:
-    def __init__(self, model, config: XRefineConfig = CONFIG):
+    def __init__(self, model, config: XRefineConfig):
         self.cfg = config
         self.device = torch.device(config.device)
         

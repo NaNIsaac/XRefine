@@ -52,9 +52,8 @@ def run_benchmark(
     finally:
         pathlib.PosixPath = temp
     
-    # Config Override (최신 ranges 적용)
+    # [FIXED] 체크포인트 config를 그대로 사용 (ranges 포함)
     config = XRefineConfig(**ckpt['config'])
-    config.ranges = CONFIG.ranges
     
     model = XRR_Fourier_PINN(config=config).to(config.device)
     model.load_state_dict(ckpt['model_state_dict'])

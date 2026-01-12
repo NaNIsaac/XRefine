@@ -13,6 +13,7 @@ from xrefine.core.structures import ParamSet
 from xrefine.config import XRefineConfig
 from xrefine.refine.config import StageConfig
 from xrefine.refine.losses import LossFn, log_mse_loss
+from xrefine.constants import LOG_VALID_THRESHOLD
 from xrefine.logger import logger
 
 
@@ -46,7 +47,7 @@ def optimize_step(
     # Q-Range 마스킹
     q_min = stage_config.q_min or 0.0
     q_max = stage_config.q_max or xrr_config.q_grid.max().item()
-    mask = (log_r_obs_gpu > -14.0) & (q_grid > q_min) & (q_grid < q_max)
+    mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_min) & (q_grid < q_max)
     
     # 파라미터 분류: 최적화 대상 vs 고정
     optimize_keys = stage_config.optimize_keys
