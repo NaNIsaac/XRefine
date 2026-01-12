@@ -215,71 +215,88 @@ class XRefineTrainer:
         patience = getattr(self.cfg.train, 'early_stop_patience', 0)
         logger.info(f"Session Start: {self.cfg.experiment_name} | Device: {self.device} | Early Stop: {patience}")
 
-        for epoch in range(self.start_epoch, max_epochs):
-            curr_w = self._get_curriculum_weight(epoch)
-            
-            avg_train_loss = self.train_epoch(epoch, curr_w)
-            val_metrics, v_pred, v_recon, v_target, v_true = self.validate(curr_w)  # p_true 추가
-            val_loss = val_metrics["loss"]
-            
-            self.history["train_loss"].append(avg_train_loss)
-            self.history["val_loss"].append(val_loss)
-            self.history["lr"].append(self.scheduler.get_last_lr()[0])
-            self.history["sup_weight"].append(curr_w)
-            
-            self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
-            self.writer.add_scalar("Loss/Val", val_loss, epoch)
-            self.writer.add_scalar("Loss/Val_Param", val_metrics["loss_param"], epoch)
-            self.writer.add_scalar("Loss/KL", val_metrics.get("kl_loss", 0), epoch)
-            self.writer.add_scalar("Meta/Sup_Weight", curr_w, epoch)
-            self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
+        try:
+            for epoch in range(self.start_epoch, max_epochs):
+                curr_w = self._get_curriculum_weight(epoch)
+                
+                avg_train_loss = self.train_epoch(epoch, curr_w)
+                val_metrics, v_pred, v_recon, v_target, v_true = self.validate(curr_w)  # p_true 추가
+                val_loss = val_metrics["loss"]
+                
+                self.history["train_loss"].append(avg_train_loss)
+                self.history["val_loss"].append(val_loss)
+                self.history["lr"].append(self.scheduler.get_last_lr()[0])
+                self.history["sup_weight"].append(curr_w)
+                
+                self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
+                self.writer.add_scalar("Loss/Val", val_loss, epoch)
+                self.writer.add_scalar("Loss/Val_Param", val_metrics["loss_param"], epoch)
+                self.writer.add_scalar("Loss/KL", val_metrics.get("kl_loss", 0), epoch)
+                self.writer.add_scalar("Meta/Sup_Weight", curr_w, epoch)
+                self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
 
-            self._save_checkpoint("last.pt", epoch)
-            
-            # Early Stopping Logic
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self.patience_counter = 0
-                self._save_checkpoint("best.pt", epoch)
-            else:
-                self.patience_counter += 1
+                self._save_checkpoint("last.pt", epoch)
+                
+                # Early Stopping Logic
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.patience_counter = 0
+                    self._save_checkpoint("best.pt", epoch)
+                else:
+                    self.patience_counter += 1
 
-            # Report at: every 50 epochs, epoch 0, or last epoch
-            is_final = (epoch == max_epochs - 1)
-            should_report = (epoch % 50 == 0) or is_final
-            
-            if should_report:
-                save_pinn_report(
-                    self.q_grid, 
-                    v_target[0:1],
-                    v_recon[0:1], 
-                    self.history["train_loss"], 
-                    v_pred, 
-                    v_true,  # p_true 전달
-                    self.save_dir / f"report_E{epoch:03d}.png", 
-                    step=epoch
-                )
+                # Report at: every 50 epochs, epoch 0, or last epoch
+                is_final = (epoch == max_epochs - 1)
+                should_report = (epoch % 50 == 0) or is_final
+                
+                if should_report:
+                    save_pinn_report(
+                        self.q_grid, 
+                        v_target[0:1],
+                        v_recon[0:1], 
+                        self.history["train_loss"], 
+                        v_pred, 
+                        v_true,  # p_true 전달
+                        self.save_dir / f"report_E{epoch:03d}.png", 
+                        step=epoch
+                    )
 
-            # Logging with more info
-            lr_now = self.scheduler.get_last_lr()[0]
-            logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
+                # Logging with more info
+                lr_now = self.scheduler.get_last_lr()[0]
+                logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
 
-            # Early Stop Check
-            if patience > 0 and self.patience_counter >= patience:
-                logger.warning(f"Early stopping triggered at epoch {epoch}. No improvement for {patience} epochs.")
-                save_pinn_report(
-                    self.q_grid, v_target[0:1], v_recon[0:1], 
-                    self.history["train_loss"], v_pred, v_true, 
-                    self.save_dir / f"report_FINAL_E{epoch:03d}.png", step=epoch
-                )
-                self.backup_to_drive(force=True)  # Early stop 시 강제 백업
-                break
+                # Early Stop Check
+                if patience > 0 and self.patience_counter >= patience:
+                    logger.warning(f"Early stopping triggered at epoch {epoch}. No improvement for {patience} epochs.")
+                    save_pinn_report(
+                        self.q_grid, v_target[0:1], v_recon[0:1], 
+                        self.history["train_loss"], v_pred, v_true, 
+                        self.save_dir / f"report_FINAL_E{epoch:03d}.png", step=epoch
+                    )
+                    self.backup_to_drive(force=True)  # Early stop 시 강제 백업
+                    break
 
-            # [COLAB] 주기적 Drive 백업 (30분마다)
-            self.backup_to_drive()
+                # [COLAB] 주기적 Drive 백업 (30분마다)
+                self.backup_to_drive()
 
-        # 학습 종료 후 최종 백업
-        self.finalize_training()
+        except KeyboardInterrupt:
+            logger.warning("⚠️ KeyboardInterrupt detected! Emergency saving...")
+            self._save_checkpoint("emergency_interrupt.pt", epoch if 'epoch' in dir() else 0)
+            self.backup_to_drive(force=True)
+            logger.info("✅ Emergency backup complete.")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error during training: {e}")
+            try:
+                self._save_checkpoint("emergency_error.pt", epoch if 'epoch' in dir() else 0)
+                self.backup_to_drive(force=True)
+                logger.info("✅ Emergency backup complete.")
+            except:
+                pass
+            raise
+        finally:
+            # 학습 종료 후 최종 백업 (정상 종료 시)
+            self.finalize_training()
 
     def _save_checkpoint(self, name: str, epoch: int):
         save_path = self.save_dir / name
