@@ -2,7 +2,7 @@
 # ==========================
 
 # [General Settings]
-experiment_name: "v2"
+experiment_name: "temp"
 # save_root: "C:\\Warehouse\\data\\XRR_AI\\transformer"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
@@ -11,7 +11,7 @@ device: "cuda"
 # [Measurement Specs]
 q_min_tth: 0.05
 q_max_tth: 15.0
-q_len: 15000
+q_len: 3000
 
 # [Instrument Hardware]
 instrument:
