@@ -264,19 +264,30 @@ class XRefineTrainer:
 
                 # Report at: every 50 epochs, epoch 0, or last epoch
                 is_final = (epoch == max_epochs - 1)
-                should_report = (epoch % 50 == 0) or is_final
+                is_best = (val_loss < self.best_val_loss) # Note: best_val_loss is updated above
+                should_report = (epoch % 50 == 0) or is_final or is_best
                 
                 if should_report:
-                    save_pinn_report(
+                    # [Performance] Only save file if best or final. Otherwise just TensorBoard.
+                    save_path = None
+                    if is_best or is_final:
+                        save_path = self.save_dir / f"report_E{epoch:03d}.png"
+                    
+                    fig = save_pinn_report(
                         self.q_grid, 
                         v_target[0:1],
                         v_recon[0:1], 
                         self.history["train_loss"], 
                         v_pred, 
                         v_true,  # p_true 전달
-                        self.save_dir / f"report_E{epoch:03d}.png", 
+                        save_path=save_path, # Can be None
                         step=epoch
                     )
+                    
+                    if fig:
+                        self.writer.add_figure("Validation/Fit", fig, epoch)
+                        import matplotlib.pyplot as plt
+                        plt.close(fig)
 
                 # Logging with more info (tqdm.write로 출력해서 프로그레스바와 충돌 방지)
                 lr_now = self.scheduler.get_last_lr()[0]

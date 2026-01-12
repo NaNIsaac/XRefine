@@ -112,9 +112,8 @@ class XRRAugmentor(nn.Module):
         R_aug = self.apply_resampling(R)
         
         # 2. Q-Shift Augmentation
-        if self.aug_cfg.q_shift_sigma > 0:
-            shift_noise = torch.randn_like(R_aug) * self.aug_cfg.q_shift_sigma
-            R_aug = (R_aug + shift_noise).clamp(min=1e-11)
+        # [REMOVED] Incorrect additive noise implementation. 
+        # Physical q-shift is already handled in 'generate_synthetic_batch' via tth_offset.
 
         # 3. Scaling & Background
         R_aug = R_aug * params.i0 + torch.pow(10.0, params.bkg)
@@ -129,8 +128,10 @@ class XRRAugmentor(nn.Module):
         
         R_aug = torch.poisson(poisson_rate) / (s_rand + 1e-9)
         
-        # (A) Low-Q Masking
-        low_q_cut = torch.rand(B, 1, device=device) * 0.05 + 0.03 
+        # (A) Low-Q Masking (Safe Zone)
+        # q_c for Si is approx 0.032. We must preserve data around and after q_c.
+        # Cutoff range: 0.005 ~ 0.020
+        low_q_cut = torch.rand(B, 1, device=device) * 0.015 + 0.005 
         mask_low = q < low_q_cut
         R_aug[mask_low] = 1e-15
         

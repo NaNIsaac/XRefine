@@ -114,9 +114,7 @@ class WeightConfig(BaseModel):
             "dq": 1.0, "tth_offset": 5.0
         }
     )
-    layer_weights: dict[str, float] = Field(
-        default={"thickness": 1.0, "roughness": 1.0, "sld": 1.0}
-    )
+    layer_weights: dict[str, float] = Field(default_factory=dict)
     # [New] Specific Layer Overrides: {'LayerName': {'thickness': 50.0}}
     specific_layer_weights: dict[str, dict[str, float]] = Field(default_factory=dict)
 

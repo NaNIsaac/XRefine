@@ -165,11 +165,12 @@ def save_pinn_report(
     loss_history: List[float], 
     params_pred: ParamSet, 
     params_true: Optional[ParamSet], 
-    save_path: Path | str, 
+    save_path: Optional[Path | str], 
     step: int
 ):
     """
     PINN Status Report (Dynamic)
+    Returns: matplotlib.figure.Figure
     """
     fig = plt.figure(figsize=(16, 8))
     gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1.2])
@@ -236,5 +237,12 @@ def save_pinn_report(
         verticalalignment='bottom')
 
     plt.tight_layout(rect=[0, 0.0, 1, 0.95])
-    plt.savefig(save_path, dpi=120)
-    plt.close('all')
+    
+    if save_path:
+        plt.savefig(save_path, dpi=120)
+        # We don't close here if we return the figure, 
+        # BUT standard pattern is create->save->close. 
+        # Since we want to return fig for tensorboard, we leave it open.
+        # Caller must close it.
+        
+    return fig

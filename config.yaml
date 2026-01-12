@@ -1,8 +1,8 @@
-# XRefine Configuration File (v2.2 - Hierarchical Weighting)
-# ============================================================
+# XRefine Configuration File (v2.3 - Explicit Weighting)
+# ========================================================
 
 # [General Settings]
-experiment_name: "XRefine_ViT_Universal_v2"
+experiment_name: "XRefine_ViT_Universal_v3"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
@@ -40,22 +40,22 @@ sample:
 
   # 3. Layers (Top -> Bottom)
   layers:
-    - name: "Top_Layer"       # Thin Top Layer (Oxide/Contam)
+    - name: "Top_Layer"       # Thin Top Layer
       thickness: [5.0, 100.0]
       roughness: [0.0, 10.0]
       sld: [0.0, 80.0]
       repeats: 1
 
-    - name: "Target_Film"     # Thick Main Film (Target)
-      thickness: [50.0, 1500.0]
+    - name: "Target_Film"     # Main Film (Target)
+      thickness: [50.0, 1000.0]
       roughness: [0.0, 20.0]
       sld: [5.0, 100.0]
       repeats: 1
 
 # [Augmentation Config]
 augmentations:
-  intensity_noise_scale: 0.05
-  bg_range: [-9.0, -5.0]
+  intensity_noise_scale: 0.02
+  bg_range: [-10.0, -6.0]
   res_sigma_range: [0.0001, 0.005]
   q_shift_sigma: 0.001
   beam_profile: "gaussian"
@@ -74,26 +74,30 @@ train:
   sup_w_end: 100.0
   phys_penalty_w: 1.0
 
+  # Loss Component Weights
   w_linear: 20.0
   w_gradient: 50.0
   w_log_base: 50.0
   
   # Parameter Weights
   weights:
-    # 1. Base Layer Weights (Default importance)
-    layer_weights:
-      thickness: 10.0
-      roughness: 1.0
-      sld: 5.0
+    # Removed generic 'layer_weights' for clarity.
+    # Everything is now explicit in specific_layer_weights.
     
-    # 2. Specific Layer Overrides (Target Focused!)
     specific_layer_weights:
       Target_Film:
-        thickness: 100.0  # Main Film Thickness is MOST important
-        sld: 20.0         # Main Film Density is important
+        thickness: 100.0  # Critical
+        sld: 20.0         # Critical
+        roughness: 1.0    # Less critical
+        
       Top_Layer:
-        thickness: 1.0    # Top layer thickness is less critical
-        roughness: 0.5    # Top roughness is hard to distinguish from Sub roughness
+        thickness: 1.0    # Nuisance-like
+        roughness: 0.5    # Nuisance-like
+        sld: 1.0
+        
+      Substrate:
+        roughness: 0.5    # Nuisance
+        sld: 1.0          # Should be easy
     
     global_weights:
       i0: 1.0
