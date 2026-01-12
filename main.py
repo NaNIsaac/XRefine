@@ -120,18 +120,36 @@ def train(
     trainer.fit(resume=resume)
     logger.info("Training session completed successfully.")
 
-@app.command()
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def eval(
+    ctx: typer.Context,
     checkpoint: Annotated[Optional[str], typer.Option("--checkpoint", help="Path to checkpoint .pt file")] = None,
     batch_size: Annotated[int, typer.Option("--batch-size", help="Evaluation batch size")] = 1000,
+    cfg: Annotated[Path, typer.Option("--cfg", help="Path to config.yaml")] = Path("config.yaml"),
 ):
     """Evaluate a trained model on synthetic or real data."""
-    logger.info(f"Starting evaluation with checkpoint: {checkpoint}")
+    try:
+        config_obj = XRefineConfig.load_yaml(cfg)
+    except Exception:
+        config_obj = CONFIG
+
+    if ctx.args:
+        config_obj = merge_unknown_args(config_obj, ctx.args)
+
+    # Resolve checkpoint path if not provided
+    if checkpoint is None:
+        checkpoint = str(config_obj.save_root / config_obj.experiment_name / "best.pt")
+    
+    if not Path(checkpoint).exists():
+        logger.error(f"❌ Checkpoint not found: {checkpoint}")
+        return
+
+    logger.info(f"🔍 [EVAL] Using checkpoint: {checkpoint}")
     evaluator = XRREvaluator(checkpoint_path=checkpoint, batch_size=batch_size)
     evaluator.setup()
     evaluator.evaluate_all()
 
-@app.command()
+@app.command(name="config")
 def config_show():
     """Print the current default configuration in JSON format."""
     print(CONFIG.model_dump_json(indent=2))

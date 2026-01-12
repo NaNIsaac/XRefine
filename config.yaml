@@ -1,8 +1,8 @@
-# XRefine Configuration File (v2.0 - Dynamic Layers)
-# ====================================================
+# XRefine Configuration File (v2.1 - Universal)
+# ===============================================
 
 # [General Settings]
-experiment_name: "XRefine_ViT_Dynamic_v1"
+experiment_name: "XRefine_ViT_Universal_v1"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
@@ -21,36 +21,37 @@ instrument:
   Ibkg_init: 1.0e-07
 
 # =============================================================================
-# [Sample Configuration] - The New Dynamic System
+# [Sample Configuration] - Universal 2-Layer Model
 # =============================================================================
-# Stack Order: Top (Surface) -> Bottom (Substrate)
 sample:
-  # 1. Global / Instrumental Parameters (Sample-specific)
-  L: [9.0, 15.0]             # Sample Length [mm]
-  beam_width: [0.01, 0.3]    # Effective Beam Width [mm]
-  bkg: [-9.0, -4.0]          # Log10 Background
+  # 1. Global / Instrumental Parameters
+  L: [5.0, 20.0]             # Sample Length [mm]
+  beam_width: [0.01, 0.2]    # Effective Beam Width [mm]
+  bkg: [-9.0, -5.0]          # Log10 Background (Broad range)
   i0: [0.8, 1.2]             # Intensity Scale
-  dq: [0.0005, 0.01]         # Resolution [A^-1]
-  tth_offset: [-0.05, 0.05]  # 2theta offset [deg]
+  dq: [0.0005, 0.005]        # Resolution [A^-1]
+  tth_offset: [-0.02, 0.02]  # Slight alignment error
 
-  # 2. Substrate
+  # 2. Substrate (Si-like but flexible)
   substrate:
-    name: "Si"
-    roughness: [0.5, 5.0]    # Interface roughness (Film/Sub)
-    sld: [19.0, 21.1]        # Si ~20.1
+    name: "Substrate"
+    roughness: [0.0, 5.0]
+    sld: [18.0, 22.0]        # Around Si (20.1)
 
   # 3. Layers (Ordered Top to Bottom)
   layers:
-    - name: "Oxide"          # Top Layer (e.g. SiO2)
-      thickness: [1.0, 50.0]
-      roughness: [0.5, 10.0] # Interface roughness (Amb/Oxide)
-      sld: [14.0, 20.0]
+    # Top Layer (e.g. Surface Oxide, Contamination, or Thin Cap)
+    - name: "Layer1"
+      thickness: [5.0, 100.0]   # Wide range for thin films
+      roughness: [0.0, 10.0]
+      sld: [0.0, 80.0]          # Covers organics to metals
       repeats: 1
 
-    - name: "Film"           # Main Film
-      thickness: [10.0, 1000.0]
-      roughness: [0.5, 20.0] # Interface roughness (Oxide/Film)
-      sld: [5.0, 100.0]
+    # Main Film
+    - name: "Layer2"
+      thickness: [50.0, 1500.0] # Covers most thin films
+      roughness: [0.0, 20.0]
+      sld: [5.0, 100.0]         # Full material range
       repeats: 1
 
 # [Augmentation Config]
@@ -71,35 +72,43 @@ train:
   steps_per_epoch: 100
   warmup_steps: 1000
   
-  # Curriculum & Physics Loss
   sup_w_start: 10000.0
   sup_w_end: 100.0
-  phys_penalty_w: 0.8579
+  phys_penalty_w: 1.0
 
   # Loss Component Weights
   w_linear: 1.0
   w_gradient: 50.0
   w_log_base: 50.0
+  
+  # Parameter Weights (Dynamic Lookup)
+  weights:
+    # Applied to every layer with these attributes
+    layer_weights:
+      thickness: 10.0  # Thickness is critical!
+      roughness: 5.0
+      sld: 5.0
+    
+    # Applied to global/instrument params
+    global_weights:
+      i0: 1.0
+      bkg: 1.0
+      L: 1.0
+      beam_width: 1.0
+      dq: 1.0
+      tth_offset: 1.0
 
 # =============================================================================
 # [Model Architecture]
 # =============================================================================
 model:
   model_type: "vit"
-  
   hidden_dim: 256
   encoder_depth: 6
-  n_layers: 2           # [INFO] Total layers (Oxide + Film)
   dropout: 0.15
-  
-  # Fourier (Disabled)
   mapping_size: 0
   fourier_scale: 50.0
-  
-  # Transformer Settings
   n_heads: 8
   dim_feedforward: 1024
   activation: "gelu"
-  
-  # ViT Patching
   patch_size: 16

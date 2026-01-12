@@ -104,10 +104,17 @@ class XRRWeightedLoss(nn.Module):
             norm_pred = (val_pred - p_min) / (p_max - p_min + 1e-9)
             norm_true = (val_true - p_min) / (p_max - p_min + 1e-9)
             
-            # Weighting: check config.train.weights logic
-            # For now simple 1.0 or generic weight
+            # Weighting Logic
             w_val = 1.0
-            # If we want specific weights, we'd look them up in config.train.weights.layer_weights
+            
+            # Parse key: "LayerName.attr" or "GlobalParam"
+            if '.' in key:
+                _, attr = key.split('.', 1)
+                # Look up generic layer weight (e.g. "thickness")
+                w_val = config.train.weights.layer_weights.get(attr, 1.0)
+            else:
+                # Look up global weight (e.g. "i0")
+                w_val = config.train.weights.global_weights.get(key, 1.0)
             
             loss_param = loss_param + F.mse_loss(norm_pred, norm_true) * w_val
 

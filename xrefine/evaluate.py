@@ -185,7 +185,11 @@ class XRREvaluator:
         self.calculate_statistics(rm, rr, pt, pp)
         self.report()
         self.save_visual_report(self.config.q_grid, rm, rr)
-        logger.info(f"Evaluation Complete. Results in: {self.exp_dir}")
+        
+        logger.info("\n" + "="*60)
+        logger.info(f"✅ Evaluation Complete!")
+        logger.info(f"📂 Results saved in: {self.exp_dir.absolute()}")
+        logger.info("="*60)
 
 if __name__ == "__main__":
     import argparse

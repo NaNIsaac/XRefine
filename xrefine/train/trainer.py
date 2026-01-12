@@ -359,12 +359,12 @@ class XRefineTrainer:
             self.history = ckpt.get('history', self.history)
             logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")
         except RuntimeError as e:
-            logger.warning(f"⚠️ Checkpoint structure mismatch (Legacy?): {e}")
-            logger.warning("Starting fresh training session ignoring incompatible checkpoint.")
+            logger.warning(f"⚠️  [Incompatible Checkpoint] Structure mismatch detected: {e}")
+            logger.warning("🔄 Starting a NEW training session from scratch (Epoch 0).")
             return
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load checkpoint: {e}")
-            logger.warning("Starting fresh training session.")
+            logger.warning(f"⚠️  Failed to load checkpoint: {e}")
+            logger.warning("🔄 Starting a NEW training session from scratch.")
             return
 
     def backup_to_drive(self, force: bool = False):
@@ -378,12 +378,13 @@ class XRefineTrainer:
         
         self.last_backup_time = now
         try:
+            logger.info("⏳ Starting Drive backup...") # [DEBUG]
             # 주요 파일만 백업 (last.pt, best.pt)
             for fname in ["last.pt", "best.pt"]:
                 src = self.save_dir / fname
                 if src.exists():
                     shutil.copy2(src, self.drive_save_dir / fname)
-            logger.info(f"📦 Backup to Drive: {self.drive_save_dir}")
+            logger.info(f"📦 Backup to Drive complete: {self.drive_save_dir}")
         except Exception as e:
             logger.warning(f"Backup failed: {e}")
 
