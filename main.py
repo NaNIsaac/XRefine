@@ -78,7 +78,7 @@ def format_config_summary(config: XRefineConfig) -> str:
     lines.append(f"{ 'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
     
     lines.append(f"{'-'*60}")
-    lines.append(f"Sample Structure:")
+    lines.append("Sample Structure:")
     for layer in config.sample.layers:
         lines.append(f"  - {layer.name:<10}: d={layer.thickness} Å")
     lines.append(f"Substrate: {config.sample.substrate.name} (SLD={config.sample.substrate.sld})")
@@ -86,7 +86,7 @@ def format_config_summary(config: XRefineConfig) -> str:
 
     return "\n".join(lines)
 
-@app.command()
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def train(
     ctx: typer.Context,
     cfg: Annotated[Path, typer.Option("--cfg", help="Path to config.yaml")] = Path("config.yaml"),
