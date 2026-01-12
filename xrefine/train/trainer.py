@@ -1,10 +1,13 @@
 from pathlib import Path
 from typing import Optional
+import shutil
+import time
+import os
 
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from tqdm.auto import tqdm  # [FIX] Colab 호환 tqdm
 
 from xrefine.config import XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
@@ -15,6 +18,18 @@ from xrefine.logger import logger
 
 # PyTorch 2.9+ 최적화 설정
 torch.backends.cudnn.benchmark = True
+
+# Colab 환경 감지
+def is_colab() -> bool:
+    try:
+        import google.colab
+        return True
+    except ImportError:
+        return False
+
+IN_COLAB = is_colab()
+if IN_COLAB:
+    from IPython.display import clear_output
 
 class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
@@ -48,9 +63,18 @@ class XRefineTrainer:
         self.optimizer.step()
         self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
 
-        # 경로 및 로거 설정
-        self.save_dir = Path(config.save_root) / config.experiment_name
+        # [COLAB OPT] 로컬 저장 경로 vs Drive 백업 경로
+        self.drive_save_dir = Path(config.save_root) / config.experiment_name
+        if IN_COLAB:
+            # Colab: /tmp에 로컬 저장, Drive는 백업용
+            self.save_dir = Path("/tmp/xrefine_checkpoints") / config.experiment_name
+            self.last_backup_time = time.time()
+            self.backup_interval = 30 * 60  # 30분
+        else:
+            self.save_dir = self.drive_save_dir
+            
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.drive_save_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(self.save_dir / "logs"))
         
         # 상태 관리
@@ -248,7 +272,14 @@ class XRefineTrainer:
                     self.history["train_loss"], v_pred, v_true, 
                     self.save_dir / f"report_FINAL_E{epoch:03d}.png", step=epoch
                 )
+                self.backup_to_drive(force=True)  # Early stop 시 강제 백업
                 break
+
+            # [COLAB] 주기적 Drive 백업 (30분마다)
+            self.backup_to_drive()
+
+        # 학습 종료 후 최종 백업
+        self.finalize_training()
 
     def _save_checkpoint(self, name: str, epoch: int):
         save_path = self.save_dir / name
@@ -279,3 +310,43 @@ class XRefineTrainer:
         self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
         self.history = ckpt.get('history', self.history)
         logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")
+
+    def backup_to_drive(self, force: bool = False):
+        """[COLAB] 로컬 체크포인트를 Drive로 백업"""
+        if not IN_COLAB:
+            return
+        
+        now = time.time()
+        if not force and (now - self.last_backup_time) < self.backup_interval:
+            return
+        
+        self.last_backup_time = now
+        try:
+            # 주요 파일만 백업 (last.pt, best.pt)
+            for fname in ["last.pt", "best.pt"]:
+                src = self.save_dir / fname
+                if src.exists():
+                    shutil.copy2(src, self.drive_save_dir / fname)
+            logger.info(f"📦 Backup to Drive: {self.drive_save_dir}")
+        except Exception as e:
+            logger.warning(f"Backup failed: {e}")
+
+    def finalize_training(self):
+        """학습 종료 후 모든 파일을 Drive로 복사"""
+        if not IN_COLAB:
+            return
+        
+        try:
+            # 전체 디렉토리 복사
+            if self.save_dir.exists():
+                for item in self.save_dir.iterdir():
+                    dest = self.drive_save_dir / item.name
+                    if item.is_file():
+                        shutil.copy2(item, dest)
+                    elif item.is_dir() and item.name != "logs":  # logs는 크므로 제외
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(item, dest)
+            logger.info(f"✅ Final backup complete: {self.drive_save_dir}")
+        except Exception as e:
+            logger.error(f"Final backup failed: {e}")
