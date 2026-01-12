@@ -58,17 +58,24 @@ class XRREvaluator:
         # 3. 모델 로드 (model_type에 따라 선택)
         model_type = getattr(self.config.model, 'model_type', 'cnn').lower()
         
+        # [Compatibility] Fourier 없이 학습된 체크포인트 감지
+        # 체크포인트에 'fourier.B' 키가 없으면 mapping_size=0으로 강제
+        state_dict = ckpt['model_state_dict']
         if model_type == 'vit':
+            has_fourier = 'fourier.B' in state_dict
+            if not has_fourier:
+                logger.info("⚠️ Checkpoint trained without Fourier. Setting mapping_size=0")
+                self.config.model.mapping_size = 0
             self.model = XRR_ViT_PINN(config=self.config).to(self.device)
         elif model_type == 'transformer':
             self.model = XRR_Transformer_PINN(config=self.config).to(self.device)
         else:
             self.model = XRR_Fourier_PINN(config=self.config, device=self.device).to(self.device)
 
-        self.model.load_state_dict(ckpt['model_state_dict'])
+        self.model.load_state_dict(state_dict)
         self.model.eval()
         
-        logger.info(f"Setup complete. Grid forced to {self.config.q_len} points.")
+        logger.info(f"Setup complete. Grid: {self.config.q_len} pts, Fourier: {getattr(self.config.model, 'mapping_size', 0) > 0}")
 
     @torch.no_grad()
     def run_inference(self) -> Tuple[torch.Tensor, ParamSet, ParamSet, torch.Tensor]:
