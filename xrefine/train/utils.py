@@ -17,8 +17,6 @@ plt.switch_backend('Agg')
 class XRRWeightedLoss(nn.Module):
     def __init__(self, q_grid: torch.Tensor):
         super().__init__()
-        weights = torch.full_like(q_grid, 1.0)
-        self.register_buffer('q_weights', weights.unsqueeze(0))
         self.register_buffer('q_grid', q_grid.unsqueeze(0))
 
     def forward(self, 
@@ -30,50 +28,66 @@ class XRRWeightedLoss(nn.Module):
                 curr_sup_w: float, 
                 phys_penalty: torch.Tensor):
         
-        # 1. 마스킹 및 전처리
+        # -----------------------------------------------------------
+        # 1. 전처리 (Masking & Scaling)
+        # -----------------------------------------------------------
         mask = (log_r_target > -10.0).float()
         valid_points = mask.sum() + 1e-9
+        
         log_r_recon = torch.log10(torch.clamp(r_recon, min=1e-11))
+        
+        # Linear Scale (I0 Fitting용)
+        r_target_linear = torch.pow(10.0, log_r_target)
+        r_recon_linear = r_recon
 
-        # 2. 크리티컬 엥글(Qc) 영역 보강
-        qc_mask = (self.q_grid < 0.08).float() * mask
-        loss_qc = torch.sum(qc_mask * (log_r_recon - log_r_target)**2) / (qc_mask.sum() + 1e-9)
+        # -----------------------------------------------------------
+        # 2. [Tier 1] Linear Loss (I0 & Critical Angle 집중)
+        # -----------------------------------------------------------
+        loss_linear = torch.sum(((r_recon_linear - r_target_linear)**2) * mask) / valid_points
 
-        # 3. 프린지 간격(Diff) 보강
+        # -----------------------------------------------------------
+        # 3. [Tier 2] Log Gradient Loss (Fringe 패턴/두께 집중)
+        # -----------------------------------------------------------
         diff_recon = torch.diff(log_r_recon, dim=-1)
         diff_target = torch.diff(log_r_target, dim=-1)
         diff_mask = mask[:, 1:]
-        loss_fringe = torch.sum(diff_mask * (diff_recon - diff_target)**2) / (diff_mask.sum() + 1e-9)
+        
+        loss_grad = torch.sum(((diff_recon - diff_target)**2) * diff_mask) / (diff_mask.sum() + 1e-9)
 
-        # 4. 베이스 재구성 손실
-        base_error = (log_r_recon - log_r_target)**2
-        loss_recon_base = (base_error * self.q_weights * mask).sum() / valid_points
+        # -----------------------------------------------------------
+        # 4. [Tier 3] Base Log MSE (전체적인 경향성)
+        # -----------------------------------------------------------
+        loss_log_base = torch.sum(((log_r_recon - log_r_target)**2) * mask) / valid_points
 
-        # 5. 파라미터 지도 학습
+        # -----------------------------------------------------------
+        # 5. [Tier 4] Parameter Supervision
+        # -----------------------------------------------------------
         loss_param = 0
         w_set = config.get_weight_set(device=log_r_target.device)
-        
         for fld in fields(ParamSet):
             key = fld.name
-            p_range = getattr(config.ranges, key)
-            p_min, p_max = p_range # Tuple unpacking
-            
+            p_min, p_max = getattr(config.ranges, key)
             norm_pred = (getattr(p_pred, key) - p_min) / (p_max - p_min + 1e-9)
             norm_true = (getattr(p_true, key) - p_min) / (p_max - p_min + 1e-9)
             
-            # Weighted MSE
             w_val = getattr(w_set, key) if hasattr(w_set, key) else 1.0
             if isinstance(w_val, torch.Tensor): w_val = w_val.item()
-            
             loss_param += F.mse_loss(norm_pred, norm_true) * w_val
 
-        # 6. 최종 통합
-        total_loss = (loss_recon_base + 15.0 * loss_qc + 30.0 * loss_fringe) + \
+        # -----------------------------------------------------------
+        # 6. 최종 Loss 조합 (Config에서 가중치 로드)
+        # -----------------------------------------------------------
+        w_linear = getattr(config.train, 'w_linear', 100.0)
+        w_gradient = getattr(config.train, 'w_gradient', 50.0)
+        w_log_base = getattr(config.train, 'w_log_base', 10.0)
+        
+        total_loss = (w_linear * loss_linear) + \
+                     (w_gradient * loss_grad) + \
+                     (w_log_base * loss_log_base) + \
                      (curr_sup_w * loss_param) + \
                      (config.train.phys_penalty_w * phys_penalty)
 
-        # [FIX] Return 5 values (Trainer expects 5)
-        return total_loss, loss_recon_base, loss_fringe, loss_qc, loss_param
+        return total_loss, loss_log_base, loss_grad, loss_linear, loss_param
 
 def plot_learning_curves(history: Dict[str, List[float]], save_path: str | Path):
     if 'train_loss' not in history or not history['train_loss']:

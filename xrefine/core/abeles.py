@@ -36,6 +36,9 @@ class AbelesMatrix(nn.Module):
         q_aug = q.unsqueeze(-1).to(dtype=torch.complex64)
         
         # SLD Complex 변환
+        # [Physics] SLD를 Ambient(공기) 기준 상대값으로 변환
+        # Abeles 행렬은 굴절률 차이를 계산하므로 기준점(Ambient SLD)을 빼줌
+        # 1e-30j는 complex 연산 안정성을 위한 작은 허수부
         sld_complex = (sld.unsqueeze(1) - sld[:, 0:1].unsqueeze(1)) * 1e-6 + 1e-30j
 
         # Wave vector (k_z)

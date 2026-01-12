@@ -22,6 +22,7 @@ from dataclasses import fields
 from xrefine.core.structures import ParamSet
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.config import XRefineConfig
+from xrefine.constants import LOG_MASK_VALUE
 
 
 class FourierFeatureExtractor(nn.Module):
@@ -203,7 +204,7 @@ class XRR_ViT_PINN(nn.Module):
             (Params, R_pred, Penalty) - Compatible with Trainer
         """
         if torch.isnan(r_obs_log).any():
-            r_obs_log = torch.nan_to_num(r_obs_log, nan=-15.0)
+            r_obs_log = torch.nan_to_num(r_obs_log, nan=LOG_MASK_VALUE)
 
         # (B, L) -> (B, 1, L)
         if r_obs_log.dim() == 2:
@@ -211,8 +212,8 @@ class XRR_ViT_PINN(nn.Module):
         else:
             x = r_obs_log
 
-        # 1. Input Normalization (-15 ~ 0 -> roughly -1 ~ 1)
-        x = (torch.clamp(x, min=-15.0, max=0.0) + 7.5) / 7.5
+        # 1. Input Normalization (LOG_MASK_VALUE ~ 0 -> roughly -1 ~ 1)
+        x = (torch.clamp(x, min=LOG_MASK_VALUE, max=0.0) - LOG_MASK_VALUE/2) / (-LOG_MASK_VALUE/2)
 
         # 2. Optional Fourier Feature Mapping
         if self.use_fourier:

@@ -110,9 +110,7 @@ class XRRAugmentor(nn.Module):
         # 실제 측정 포인트 수의 다양성을 모사 (Coarse Sampling -> Linear Interpolation)
         R_aug = self.apply_resampling(R)
         
-        # 2. Q-Shift
-        
-        # 2. Q-Shift
+        # 2. Q-Shift Augmentation
         if self.aug_cfg.q_shift_sigma > 0:
             shift_noise = torch.randn_like(R_aug) * self.aug_cfg.q_shift_sigma
             R_aug = (R_aug + shift_noise).clamp(min=1e-11)

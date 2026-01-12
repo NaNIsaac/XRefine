@@ -64,11 +64,16 @@ train:
   sup_w_end: 1
   phys_penalty_w: 0.8579
 
+  # Loss Component Weights (Reconstruction)
+  w_linear: 100.0    # I0/Critical Angle 집중
+  w_gradient: 100.0   # Fringe 패턴/두께 집중
+  w_log_base: 10.0   # 전체적인 경향성
+
   # Parameter-specific Weights
 weights:
 
   i0: 1.0
-  d_f: 5.0
+  d_f: 10.0
   rho_f: 5.0
   sig_f: 5.0
   d_ox: 1.0

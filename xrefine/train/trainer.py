@@ -10,6 +10,7 @@ from xrefine.config import XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.train.utils import XRRWeightedLoss, save_pinn_report
+from xrefine.core.abeles import AbelesMatrix
 from xrefine.logger import logger
 
 # PyTorch 2.9+ 최적화 설정
@@ -27,6 +28,7 @@ class XRefineTrainer:
         # 유틸리티 초기화
         self.criterion = XRRWeightedLoss(self.q_grid).to(self.device)
         self.augmenter = XRRAugmentor(config).to(self.device)
+        self.simulator = AbelesMatrix(device=self.device)  # Cached Simulator
         
         # 최적화 설정
         self.optimizer = optim.AdamW(
@@ -54,7 +56,8 @@ class XRefineTrainer:
         # 상태 관리
         self.start_epoch = 0
         self.best_val_loss = float('inf')
-        self.history = {"train_loss": [], "val_loss": []}
+        self.patience_counter = 0  # Early stopping 카운터
+        self.history = {"train_loss": [], "val_loss": [], "lr": [], "sup_weight": []}
 
     def _get_curriculum_weight(self, epoch: int) -> float:
         max_epochs = self.cfg.train.epochs
@@ -75,6 +78,7 @@ class XRefineTrainer:
                 q_grid=self.cfg.q_grid,
                 batch_size=self.cfg.train.batch_size,
                 config=self.cfg,
+                simulator=self.simulator,  # Cached
                 augmenter=self.augmenter
             )
             r_meas = r_meas.to(self.device)
@@ -147,6 +151,7 @@ class XRefineTrainer:
             batch_size=self.cfg.train.batch_size, 
             q_grid=self.q_grid, 
             config=self.cfg, 
+            simulator=self.simulator,  # Cached
             augmenter=self.augmenter
         )
         r_meas = r_meas.to(self.device)
@@ -175,24 +180,28 @@ class XRefineTrainer:
             "loss_param": loss_param.item() if isinstance(loss_param, torch.Tensor) else loss_param,
             "kl_loss": kl_loss
         }
-        return metrics, p_pred, r_recon, log_r_obs
+        
+        return metrics, p_pred, r_recon, log_r_obs, p_true  # p_true 추가 반환
 
     def fit(self, resume: bool = False):
         if resume:
             self.load_checkpoint()
             
         max_epochs = self.cfg.train.epochs
-        logger.info(f"Session Start: {self.cfg.experiment_name} | Device: {self.device}")
+        patience = getattr(self.cfg.train, 'early_stop_patience', 0)
+        logger.info(f"Session Start: {self.cfg.experiment_name} | Device: {self.device} | Early Stop: {patience}")
 
         for epoch in range(self.start_epoch, max_epochs):
             curr_w = self._get_curriculum_weight(epoch)
             
             avg_train_loss = self.train_epoch(epoch, curr_w)
-            val_metrics, v_pred, v_recon, v_target = self.validate(curr_w)
+            val_metrics, v_pred, v_recon, v_target, v_true = self.validate(curr_w)  # p_true 추가
             val_loss = val_metrics["loss"]
             
             self.history["train_loss"].append(avg_train_loss)
             self.history["val_loss"].append(val_loss)
+            self.history["lr"].append(self.scheduler.get_last_lr()[0])
+            self.history["sup_weight"].append(curr_w)
             
             self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
             self.writer.add_scalar("Loss/Val", val_loss, epoch)
@@ -202,23 +211,44 @@ class XRefineTrainer:
             self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
 
             self._save_checkpoint("last.pt", epoch)
+            
+            # Early Stopping Logic
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                self.patience_counter = 0
                 self._save_checkpoint("best.pt", epoch)
+            else:
+                self.patience_counter += 1
 
-            if epoch % 20 == 0:
+            # Report at: every 50 epochs, epoch 0, or last epoch
+            is_final = (epoch == max_epochs - 1)
+            should_report = (epoch % 50 == 0) or is_final
+            
+            if should_report:
                 save_pinn_report(
                     self.q_grid, 
-                    v_target[0:1],  # [FIX] 진짜 정답 데이터 전달
+                    v_target[0:1],
                     v_recon[0:1], 
                     self.history["train_loss"], 
                     v_pred, 
-                    None,  # p_true는 validate에서 받아오지 않았으므로 None (또는 추가 반환)
+                    v_true,  # p_true 전달
                     self.save_dir / f"report_E{epoch:03d}.png", 
                     step=epoch
                 )
 
-            logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | KL: {val_metrics.get('kl_loss', 0):.4f} | Best: {self.best_val_loss:.4f}")
+            # Logging with more info
+            lr_now = self.scheduler.get_last_lr()[0]
+            logger.info(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
+
+            # Early Stop Check
+            if patience > 0 and self.patience_counter >= patience:
+                logger.warning(f"Early stopping triggered at epoch {epoch}. No improvement for {patience} epochs.")
+                save_pinn_report(
+                    self.q_grid, v_target[0:1], v_recon[0:1], 
+                    self.history["train_loss"], v_pred, v_true, 
+                    self.save_dir / f"report_FINAL_E{epoch:03d}.png", step=epoch
+                )
+                break
 
     def _save_checkpoint(self, name: str, epoch: int):
         save_path = self.save_dir / name

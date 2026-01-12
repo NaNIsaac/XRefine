@@ -90,10 +90,20 @@ class TrainingConfig(BaseModel):
     epochs: int = 300
     steps_per_epoch: int = 100
     warmup_steps: int = 1000
+    early_stop_patience: int = 50  # 0 = 비활성화
     
+    # Supervision (Parameter) Loss
     sup_w_start: float = 100.0
     sup_w_end: float = 2000.0
     phys_penalty_w: float = 10.0
+    
+    # Loss Component Weights (Reconstruction)
+    # Linear Loss: I0/Critical Angle 집중 (값 범위 0~1)
+    w_linear: float = 100.0
+    # Gradient Loss: Fringe 패턴/두께 집중
+    w_gradient: float = 50.0
+    # Log Base Loss: 전체적인 경향성
+    w_log_base: float = 10.0
     
     weights: WeightConfig = Field(default_factory=WeightConfig)
 

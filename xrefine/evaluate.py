@@ -32,6 +32,7 @@ class XRREvaluator:
         self.results_df: Optional[pd.DataFrame] = None
         self.sample_metrics: Optional[pd.DataFrame] = None 
         self.metrics_summary: Dict[str, Dict] = {}
+        self.history: Optional[Dict] = None  # Training history (lr, loss, etc.)
 
     def setup(self):
         """환경 설정 및 모델 로드"""
@@ -74,6 +75,9 @@ class XRREvaluator:
 
         self.model.load_state_dict(state_dict)
         self.model.eval()
+        
+        # 4. 학습 이력 로드
+        self.history = ckpt.get('history', {})
         
         logger.info(f"Setup complete. Grid: {self.config.q_len} pts, Fourier: {getattr(self.config.model, 'mapping_size', 0) > 0}")
 
@@ -245,6 +249,74 @@ class XRREvaluator:
         except Exception as e:
             logger.warning(f"Skipping heatmap generation due to error: {e}")
 
+    def save_training_curves(self):
+        """학습 이력 시각화 (LR, Loss, Supervision Weight)"""
+        if not self.history:
+            logger.warning("No training history found in checkpoint. Skipping training curves.")
+            return
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        epochs = range(1, len(self.history.get('train_loss', [])) + 1)
+        
+        # Plot 1: Loss Curves
+        ax1 = axes[0, 0]
+        if 'train_loss' in self.history:
+            ax1.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', alpha=0.8)
+        if 'val_loss' in self.history:
+            ax1.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', alpha=0.8)
+        ax1.set_yscale('log')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss')
+        ax1.set_title('Loss Curves')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Learning Rate Schedule
+        ax2 = axes[0, 1]
+        if 'lr' in self.history and self.history['lr']:
+            ax2.plot(epochs, self.history['lr'], 'g-', lw=2)
+            ax2.set_ylabel('Learning Rate')
+            ax2.set_xlabel('Epoch')
+            ax2.set_title('Learning Rate Schedule')
+            ax2.ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
+            ax2.grid(True, alpha=0.3)
+        else:
+            ax2.text(0.5, 0.5, 'LR history not available\n(trained with older version)', 
+                     ha='center', va='center', transform=ax2.transAxes, fontsize=12)
+            ax2.set_title('Learning Rate Schedule (N/A)')
+        
+        # Plot 3: Supervision Weight (Curriculum)
+        ax3 = axes[1, 0]
+        if 'sup_weight' in self.history and self.history['sup_weight']:
+            ax3.plot(epochs, self.history['sup_weight'], 'm-', lw=2)
+            ax3.set_ylabel('Supervision Weight')
+            ax3.set_xlabel('Epoch')
+            ax3.set_title('Curriculum Learning (Supervision Weight)')
+            ax3.grid(True, alpha=0.3)
+        else:
+            ax3.text(0.5, 0.5, 'Sup weight history not available', 
+                     ha='center', va='center', transform=ax3.transAxes, fontsize=12)
+            ax3.set_title('Curriculum Learning (N/A)')
+        
+        # Plot 4: Summary Stats
+        ax4 = axes[1, 1]
+        ax4.axis('off')
+        summary_text = f"""
+        --- Training Summary ---
+        
+        Total Epochs: {len(epochs)}
+        Final Train Loss: {self.history.get('train_loss', [0])[-1]:.4f}
+        Final Val Loss: {self.history.get('val_loss', [0])[-1]:.4f}
+        Final LR: {self.history.get('lr', ['N/A'])[-1] if self.history.get('lr') else 'N/A'}
+        """
+        ax4.text(0.1, 0.5, summary_text, fontsize=12, family='monospace',
+                 verticalalignment='center', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(self.exp_dir / "report_training_curves.png", dpi=150)
+        plt.close()
+        logger.info(f"📊 Training curves saved to {self.exp_dir / 'report_training_curves.png'}")
+
     def report(self):
         lines = [f"{'Parameter':<18} | {'MAE':<10} | {'MAPE(%)':<10} | {'RMSE':<10} | {'R2 Score':<10}\n{'-' * 95}"]
         for k, v in self.metrics_summary.items():
@@ -258,6 +330,7 @@ class XRREvaluator:
         self.calculate_statistics(rm, rr, pt, pp)
         self.report()
         self.save_visual_report(self.config.q_grid, rm, rr)
+        self.save_training_curves()  # LR, Loss, Sup_Weight 시각화
         logger.info(f"Professional Evaluation Complete. Artifacts at: {self.exp_dir}")
 
 if __name__ == "__main__":
