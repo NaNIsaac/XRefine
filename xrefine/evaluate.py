@@ -310,6 +310,56 @@ class XRREvaluator:
         plt.savefig(self.exp_dir / "eval_4_pearson_map.png", dpi=100)
         plt.close()
 
+    def save_correlation_plots(self):
+        """[Recovered] Save separate correlation plots for Core and Instrument parameters."""
+        core_keys, inst_keys = self._split_params()
+        
+        for group_name, keys in [("Physics", core_keys), ("Instrument", inst_keys)]:
+            if not keys: continue
+            
+            n_cols = 4
+            n_rows = (len(keys) + n_cols - 1) // n_cols
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+            axes = axes.flatten()
+            
+            for i, key in enumerate(keys):
+                sub = self.results_df[self.results_df['Parameter'] == key]
+                ax = axes[i]
+                
+                # Scatter
+                ax.scatter(sub['True'], sub['Pred'], alpha=0.15, s=6, color='#2c3e50')
+                
+                # Identity Line
+                mi, ma = min(sub['True'].min(), sub['Pred'].min()), max(sub['True'].max(), sub['Pred'].max())
+                ax.plot([mi, ma], [mi, ma], 'r--', lw=1.5)
+                
+                r2 = self.metrics_summary[key]['R2']
+                # Shorten title
+                title_key = key.replace("thickness", "d").replace("roughness", "sig").replace("sld", "rho")
+                ax.set_title(f"{title_key}\nR²: {r2:.3f}", fontsize=10)
+                ax.grid(True, alpha=0.3)
+                
+            # Hide empty axes
+            for j in range(i + 1, len(axes)):
+                axes[j].axis('off')
+                
+            plt.tight_layout()
+            plt.savefig(self.exp_dir / f"report_corr_{group_name.lower()}.png", dpi=150)
+            plt.close()
+
+    def report(self):
+        """Print summary report to log."""
+        header = f"{'Parameter':<25} | {'MAE':<10} | {'MAPE(%)':<10} | {'R2 Score':<10}"
+        logger.info("\n" + header + "\n" + "-" * 65)
+        
+        # Sort keys so Core params come first
+        core_keys, inst_keys = self._split_params()
+        
+        for k in core_keys + inst_keys:
+            v = self.metrics_summary[k]
+            prefix = "[*] " if k in core_keys else "    "
+            logger.info(f"{prefix}{k:<21} | {v['MAE']:<10.4f} | {v['MAPE']:<10.2f} | {v['R2']:<10.4f}")
+
     def report_physical_consistency(self):
         """[5] 물리적 일관성 체크 리포트"""
         # Condition: Roughness < 0.5 * Thickness
@@ -344,11 +394,18 @@ class XRREvaluator:
         self.run_inference()
         self.calculate_metrics()
         
+        # [FIX] Print Report First
+        self.report()
+        
         logger.info("🎨 Generating Visualization Reports...")
         self.plot_best_worst_cases()
         self.plot_training_curves()
         self.plot_error_vs_value()
         self.plot_pearson_map()
+        
+        # [FIX] Save Correlation Plots
+        self.save_correlation_plots()
+        
         self.report_physical_consistency()
         
         logger.info(f"\n✅ Evaluation Complete! Reports saved in: {self.exp_dir}")
