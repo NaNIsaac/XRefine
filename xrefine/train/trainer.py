@@ -127,8 +127,8 @@ class XRefineTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
-                # 2. Forward Pass
-                p_pred, r_recon, aux_output = self.model(log_r_obs)
+                # 2. Forward Pass (Learnable Mode: Fixed Params 주입)
+                p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=p_true)
                 
                 # 3. VAE KL Loss Calculation
                 kl_loss = torch.tensor(0.0, device=self.device)
@@ -198,7 +198,8 @@ class XRefineTrainer:
         
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
         
-        p_pred, r_recon, aux_output = self.model(log_r_obs)
+        # [FIX] Fixed Params 주입
+        p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=p_true)
         
         kl_loss = 0.0
         if isinstance(aux_output, tuple):

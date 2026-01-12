@@ -133,9 +133,35 @@ class XRRAugmentor(nn.Module):
         mask_low = q < low_q_cut
         R_aug[mask_low] = 1e-15
         
-        # (B) High-Q Random Cutoff
-        n_q = Q
-        cutoff_indices = torch.randint(int(n_q * 0.4), n_q + 1, (B, 1), device=device)
+        # (B) Smart High-Q Cutoff (Hybrid Strategy)
+        # Strategy 1 (80%): Smart Cutoff - 신호가 Noise Floor에 도달하면 약간의 마진 후 종료
+        # Strategy 2 (20%): Random Cutoff - 다양성 확보를 위해 무작위 길이로 잘림
+        
+        use_smart_cutoff = torch.rand(B, 1, device=device) < 0.8
+        
+        # --- Smart Cutoff Logic ---
+        bkg_level = torch.pow(10.0, params.bkg)  # (B, 1)
+        floor_threshold = bkg_level * 5.0        # Floor보다 약간 위에서 감지 시작
+        
+        # Threshold 이하로 떨어지는 첫 지점 탐색
+        is_below_floor = R_aug < floor_threshold # (B, Q)
+        # argmax는 첫 번째 True의 인덱스를 반환 (없으면 0)
+        first_floor_idx = torch.argmax(is_below_floor.int(), dim=1).unsqueeze(1)
+        
+        # Floor에 도달 못한 경우(0)는 n_q(전체)로 설정
+        floor_not_found = (first_floor_idx == 0)
+        smart_base_idx = torch.where(floor_not_found, torch.tensor(n_q, device=device), first_floor_idx)
+        
+        # Margin 추가 (Noise Floor를 50~150 포인트 정도 보여줌)
+        margin = torch.randint(50, 150, (B, 1), device=device)
+        smart_indices = torch.clamp(smart_base_idx + margin, min=int(n_q * 0.4), max=n_q)
+        
+        # --- Random Cutoff Logic ---
+        random_indices = torch.randint(int(n_q * 0.4), n_q + 1, (B, 1), device=device)
+        
+        # --- Combine ---
+        cutoff_indices = torch.where(use_smart_cutoff, smart_indices, random_indices)
+        
         indices = torch.arange(n_q, device=device).unsqueeze(0)
         mask_high = indices >= cutoff_indices
         R_aug[mask_high] = 1e-15

@@ -6,7 +6,7 @@ import torch
 from torch import Tensor
 import numpy as np
 
-RE_ANGSTROM = 2.81794032e-5
+from xrefine.constants import RE_ANGSTROM
 
 @dataclass
 class Instrument:
@@ -153,20 +153,20 @@ class FitTarget:
 
 @dataclass
 class ParamSet:
-    d_f: Tensor = field(metadata={'mult': 'n', 'type': 'physics'})
-    sig_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
-    rho_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics'})
-    d_ox: Tensor   = field(metadata={'mult': 1, 'type': 'physics'})
-    sig_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
-    rho_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics'})
-    L: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
-    i0: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
-    bkg: Tensor = field(metadata={'mult': 1, 'type': 'instrument'}) 
-    beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})
-    dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # Resolution [Å⁻¹]
-    tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument'})  # 2θ offset [°]
-    rho_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics'})   # Substrate SLD
-    sig_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics'})   # Substrate roughness [Å]
+    d_f: Tensor = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
+    sig_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
+    rho_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
+    d_ox: Tensor   = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
+    sig_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
+    rho_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
+    L: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
+    i0: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
+    bkg: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True}) 
+    beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
+    dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})  # Resolution [Å⁻¹]
+    tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})  # 2θ offset [°]
+    rho_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': False})   # Substrate SLD (Fixed/Nuisance)
+    sig_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': False})   # Substrate roughness (Fixed/Nuisance)
 
     @classmethod
     def names(cls) -> List[str]:
@@ -175,6 +175,16 @@ class ParamSet:
         외부에서 keys = ['d_f', ...] 하드코딩 대신 ParamSet.names() 사용 가능.
         """
         return [f.name for f in fields(cls)]
+
+    @classmethod
+    def learnable_names(cls) -> List[str]:
+        """학습 대상 파라미터 이름 반환"""
+        return [f.name for f in fields(cls) if f.metadata.get('learnable', True)]
+
+    @classmethod
+    def fixed_names(cls) -> List[str]:
+        """고정(Nuisance) 파라미터 이름 반환"""
+        return [f.name for f in fields(cls) if not f.metadata.get('learnable', True)]
 
     @classmethod
     def physics_names(cls) -> List[str]:

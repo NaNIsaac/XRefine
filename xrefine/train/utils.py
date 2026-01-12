@@ -64,8 +64,9 @@ class XRRWeightedLoss(nn.Module):
         # -----------------------------------------------------------
         loss_param = 0
         w_set = config.get_weight_set(device=log_r_target.device)
-        for fld in fields(ParamSet):
-            key = fld.name
+        # [FIX] Learnable Params만 Loss 계산
+        for key in ParamSet.learnable_names():
+            fld = next(f for f in fields(ParamSet) if f.name == key)
             p_min, p_max = getattr(config.ranges, key)
             norm_pred = (getattr(p_pred, key) - p_min) / (p_max - p_min + 1e-9)
             norm_true = (getattr(p_true, key) - p_min) / (p_max - p_min + 1e-9)
