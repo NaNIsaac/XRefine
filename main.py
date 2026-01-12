@@ -15,7 +15,8 @@ from xrefine.evaluate import XRREvaluator
 from xrefine.models import get_model
 from xrefine.logger import logger
 
-app = typer.Typer(help="XRefine: Physics-Informed AI for XRR Analysis")
+# [Performance] Disable pretty exceptions to prevent browser freeze in Colab
+app = typer.Typer(help="XRefine: Physics-Informed AI for XRR Analysis", pretty_exceptions_enable=False)
 
 def merge_unknown_args(config_obj: XRefineConfig, unknown: List[str]) -> XRefineConfig:
     """CLI 인자를 계층적 dict로 변환하여 Config 객체 업데이트"""

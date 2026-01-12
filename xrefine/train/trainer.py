@@ -108,7 +108,8 @@ class XRefineTrainer:
             leave=False,
             total=steps,         # 명시적 total
             ncols=100,           # 바 너비 고정
-            ascii=" >="          # ASCII 바 문자 (호환성)
+            ascii=" >=",         # ASCII 바 문자 (호환성)
+            mininterval=1.0      # [Performance] 1초에 최대 1번만 갱신 (브라우저 프리징 방지)
         )
         
         for step in pbar:
