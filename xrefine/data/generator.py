@@ -2,13 +2,11 @@ import torch
 from torch import Tensor
 from torch.utils.data import IterableDataset, DataLoader
 from typing import Optional, Tuple
-from dataclasses import fields
 
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 from xrefine.data.augmentations import XRRAugmentor
-from xrefine.logger import logger
 
 def generate_synthetic_batch(
     batch_size: int, 
@@ -18,8 +16,8 @@ def generate_synthetic_batch(
     augmenter: Optional[XRRAugmentor] = None
 ) -> Tuple[Tensor, ParamSet]:
     """
-    [Fixed] Linear Scale Reflectivity를 반환합니다.
-    (Trainer에서 Log 변환을 수행하므로 여기서는 순수 값을 내보냅니다.)
+    Generate a synthetic batch of XRR data using dynamic layer configuration.
+    Returns: (Reflectivity [Linear], ParamSet)
     """
     device = config.device
     q_grid = q_grid.to(device)
@@ -27,21 +25,9 @@ def generate_synthetic_batch(
     if simulator is None:
         simulator = AbelesMatrix(device=device)
     
-    n = getattr(config.model, 'n_layers', 1)
-    sampled_values = {}
-
-    # 1. Parameter Sampling
-    for fld in fields(ParamSet):
-        mult = fld.metadata.get('mult', 1)
-        width = n if mult == 'n' else 1
-        p_range = getattr(config.ranges, fld.name)
-        low, high = p_range
-        
-        sampled_values[fld.name] = torch.rand(
-            (batch_size, width), device=device, dtype=torch.float32
-        ) * (high - low) + low
-
-    params_gt = ParamSet(**sampled_values)
+    # 1. Parameter Sampling (Dynamic)
+    # This replaces the manual field iteration with the class method
+    params_gt = ParamSet.from_config(config.sample, batch_size=batch_size, device=device)
 
     # 2. Structure Assembly
     thickness, roughness, sld_full = params_gt.assemble_structure()
@@ -49,8 +35,10 @@ def generate_synthetic_batch(
     q_batch = q_grid.view(1, -1).expand(batch_size, -1)
     
     # Offset Augmentation
-    if hasattr(params_gt, 'tth_offset'):
-        tth_offset_rad = params_gt.tth_offset * (3.14159 / 180.0) / 2.0
+    # DynamicParamSet supports .tth_offset if it's in the params dict
+    if 'tth_offset' in params_gt._params:
+        tth_offset = params_gt.tth_offset
+        tth_offset_rad = tth_offset * (3.14159 / 180.0) / 2.0
         q_offset = (4 * 3.14159 / config.instrument.wavelength) * torch.sin(tth_offset_rad)
         q_batch = q_batch + q_offset
 
@@ -67,17 +55,16 @@ def generate_synthetic_batch(
 
     # 4. Augmentation & Post-processing
     if augmenter is not None:
-        # Augmenter는 Linear Scale 입력을 기대함
+        # Augmenter expects Linear Scale input
         r_final = augmenter(q_batch, refl_pure, params_gt)
     else:
-        # Manual Augmentation
+        # Manual Augmentation fallback
         r_final = refl_pure * params_gt.i0 + torch.pow(10.0, params_gt.bkg)
-        # Add Noise (Linear Scale에서 추가해야 물리적으로 타당함)
+        # Add Noise
         noise = torch.randn_like(r_final) * config.augmentations.intensity_noise_scale * r_final
         r_final = r_final + noise
 
-    # [중요] Log를 취하지 않고 Linear 상태로 반환! 
-    # (Trainer에서 Clamp 후 Log를 취할 예정)
+    # Return Linear Scale
     r_final = torch.clamp(r_final, min=1e-12, max=2.0)
 
     return r_final, params_gt

@@ -90,12 +90,15 @@ class DilatedCNNEncoder(nn.Module):
         return self.regressor(feat)
 
 
+from xrefine.models import register_model
+
+@register_model("cnn")
 class XRR_Fourier_PINN(BasePINNModel):
     """
     Dilated CNN 기반 PINN 모델.
     Fourier Feature Mapping으로 고주파 Fringe 패턴 포착.
     """
-    def __init__(self, config: XRefineConfig, device='cpu'):
+    def __init__(self, config: XRefineConfig):
         super().__init__(config)
         self.encoder_net = DilatedCNNEncoder(config, self.output_dim)
 

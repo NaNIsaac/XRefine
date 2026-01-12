@@ -1,15 +1,15 @@
-from dataclasses import dataclass, field, fields
-from typing import Any, List
-from collections.abc import Iterator
-
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Dict, List, Iterator, Self, Any
 import torch
 from torch import Tensor
-import numpy as np
-
+import torch.nn as nn
 from xrefine.constants import RE_ANGSTROM
+from xrefine.config import SampleConfig  # We need to know the structure to build params
 
 @dataclass
 class Instrument:
+    """Legacy Instrument class, kept for compatibility with older tests/logic if needed."""
     wavelength: float = 1.54
     I0: float = 1.0
     Ibkg: float = 1e-10
@@ -17,304 +17,173 @@ class Instrument:
     sample_len: float = 10.0 # mm
     beam_width: float = 0.2  # mm
 
-@dataclass
-class Layer:
-    thickness: float  # [Å]
-    roughness: float  # [Å]
-    sld: complex  # [10^-6 Å^-2]
-    f: complex = field(default=complex(1, 0), repr=False)
+class DynamicParamSet:
+    """
+    Dynamic container for learnable physical parameters.
+    Replaces the hardcoded 'ParamSet' with a dictionary-based approach
+    that adapts to any layer structure defined in SampleConfig.
+    
+    Structure:
+    - layers: list of layer names (ordered)
+    - params: dict[str, Tensor] -> 'Film.thickness', 'Film.roughness', etc.
+    - instrument: dict[str, Tensor] -> 'i0', 'bkg', etc.
+    """
+    
+    # Standard keys for instrument parameters
+    INSTRUMENT_KEYS = {'L', 'i0', 'bkg', 'beam_width', 'dq', 'tth_offset'}
 
-    @property
-    def density(self) -> float:
-        """
-        Unit: [atoms / Å^3]
-        Formula:
-            SLD = r_e * rho * f
-            rho = SLD / (r_e * f)
-        """
-        if self.f.real == 0:
-            return 0.0
-
-        # SLD is usually given in 10^-6 A^-2
-        # We use real part for density calculation
-        real_sld_value = self.sld.real * 1e-6 
-        
-        return real_sld_value / (RE_ANGSTROM * self.f.real)
-
-# Common Layers
-AIR = Layer(thickness=0, roughness=0, sld=complex(0, 0))
-# Example substrate (Si) - values can be adjusted
-SI_SUBSTRATE = Layer(thickness=0, roughness=2.0, sld=complex(20.1, 0.46))
-
-@dataclass
-class Sample:
-    layers: List[Layer] = field(default_factory=list)
-    Ambient: Layer = field(default_factory=lambda: Layer(thickness=0, roughness=0, sld=complex(0, 0)))
-    Substrate: Layer = field(default_factory=lambda: Layer(thickness=0, roughness=2.0, sld=complex(20.1, 0.46)))
-
-    def to_tensor(self, device: torch.device, batch_size: int = 1) -> tuple[Tensor, Tensor, Tensor]:
-        """
-        Convert sample parameters to tensors for simulation.
-        
-        Args:
-            device: Torch device.
-            batch_size: Batch size to repeat parameters.
-            
-        Returns:
-            (thickness, roughness, sld)
-            thickness: (batch, n_layers)
-            roughness: (batch, n_layers + 1)
-            sld: (batch, n_layers + 2)
-        """
-        # Thickness: [L1, ..., LN]
-        tk_vals = [l.thickness for l in self.layers]
-        thickness = torch.tensor([tk_vals], device=device, dtype=torch.float64)
-        
-        # Roughness: [Amb/L1, L1/L2, ..., LN/Sub]
-        # Mapping: L1.roughness -> Amb/L1 (r[0])
-        # ... LN.roughness -> LN-1/LN (r[N-1])
-        # Sub.roughness -> LN/Sub (r[N])
-        r_vals = [l.roughness for l in self.layers] + [self.Substrate.roughness]
-        roughness = torch.tensor([r_vals], device=device, dtype=torch.float64)
-
-        # SLD: [Ambient, L1, ..., LN, Sub]
-        sld_vals = [self.Ambient.sld] + [l.sld for l in self.layers] + [self.Substrate.sld]
-        # Convert complex to whatever simulator expects? 
-        # Usually simulator handles complex if dtyped.
-        sld = torch.tensor([sld_vals], device=device, dtype=torch.complex128)
-        
-        if batch_size > 1:
-            thickness = thickness.repeat(batch_size, 1)
-            roughness = roughness.repeat(batch_size, 1)
-            sld = sld.repeat(batch_size, 1)
-            
-        return thickness, roughness, sld
+    def __init__(self, 
+                 params: Dict[str, Tensor], 
+                 layer_names: List[str],
+                 device: torch.device = None):
+        self._params = params
+        self.layer_names = layer_names # Order matters for assembly!
+        self.device = device or (next(iter(params.values())).device if params else torch.device('cpu'))
 
     @classmethod
-    def from_tensor(cls, thickness: Tensor, roughness: Tensor, sld: Tensor) -> 'Sample':
+    def from_config(cls, config: SampleConfig, batch_size: int = 1, device: torch.device = None) -> Self:
         """
-        Create a Sample from single tensors (1D). 
-        Used for reconstructing objects from prediction or optimization results.
-        params must be 1D or scalar tensors.
+        Initialize parameters (randomly or centrally) based on ranges in SampleConfig.
+        This creates the 'Parameter State' for a batch.
         """
-        # Ensure CPU and python primitives
-        if thickness.dim() > 1:
-            raise ValueError("from_tensor expects 1D tensors (single sample).")
+        device = device or torch.device('cpu')
+        params = {}
+        layer_names = [l.name for l in config.layers]
 
-        t = thickness.detach().cpu().numpy()
-        r = roughness.detach().cpu().numpy()
-        s = sld.detach().cpu().numpy()
+        def sample_val(rng):
+            # Uniform sampling: min + rand * (max - min)
+            val = rng[0] + torch.rand(batch_size, 1, device=device) * (rng[1] - rng[0])
+            return val
+
+        # 1. Layer Parameters
+        for layer in config.layers:
+            params[f"{layer.name}.thickness"] = sample_val(layer.thickness)
+            params[f"{layer.name}.roughness"] = sample_val(layer.roughness)
+            params[f"{layer.name}.sld"] = sample_val(layer.sld)
         
-        n_layers = len(t)
+        # 2. Substrate
+        # Substrate has roughness (interface with bottom layer) and SLD. Thickness is infinite (0).
+        params["Substrate.roughness"] = sample_val(config.substrate.roughness)
+        params["Substrate.sld"] = sample_val(config.substrate.sld)
         
-        # sld: [Amb, L1...LN, Sub] -> size N+2
-        # r: [L1_r, ..., LN_r, Sub_r] -> size N+1 (assuming L1_r is top interface)
-        
-        # Ambient
-        amb_sld = complex(s[0]) if np.iscomplexobj(s) else complex(s[0], 0)
-        ambient = Layer(thickness=0, roughness=0, sld=amb_sld)
-        
-        layers = []
-        for i in range(n_layers):
-            l_thick = float(t[i])
-            l_rough = float(r[i]) # Interface above
-            l_sld_val = s[i+1]
-            l_sld = complex(l_sld_val) if np.iscomplexobj(s) else complex(l_sld_val, 0)
-            
-            layers.append(Layer(thickness=l_thick, roughness=l_rough, sld=l_sld))
-            
-        # Substrate
-        sub_sld_val = s[-1]
-        sub_sld = complex(sub_sld_val) if np.iscomplexobj(s) else complex(sub_sld_val, 0)
-        sub_rough = float(r[-1])
-        substrate = Layer(thickness=0, roughness=sub_rough, sld=sub_sld)
-        
-        return cls(layers=layers, Ambient=ambient, Substrate=substrate)
+        # 3. Ambient
+        # Ambient is usually fixed air (sld=0), but we can make it learnable if needed.
+        # For now, treat it as fixed constant 0 in assembly, unless specified.
+        # We generally DON'T store fixed constants in learnable params dict.
 
-@dataclass
-class Experiment:
-    q: np.ndarray
-    refl: np.ndarray
-    instrument: Instrument
-    sample: Sample
+        # 4. Instrument/Global Parameters
+        # config.sample has these ranges now
+        for key in cls.INSTRUMENT_KEYS:
+            if hasattr(config, key):
+                rng = getattr(config, key)
+                params[key] = sample_val(rng)
 
-@dataclass
-class FitParam:
-    value: float
-    min: float
-    max: float
-    active: bool = True
+        return cls(params, layer_names, device)
 
-@dataclass
-class FitTarget:
-    obj: Any
-    attr_name: str
-    spec: FitParam
-
-@dataclass
-class ParamSet:
-    d_f: Tensor = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
-    sig_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
-    rho_f: Tensor  = field(metadata={'mult': 'n', 'type': 'physics', 'learnable': True})
-    d_ox: Tensor   = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
-    sig_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
-    rho_ox: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': True})
-    L: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
-    i0: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
-    bkg: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True}) 
-    beam_width: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})
-    dq: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})  # Resolution [Å⁻¹]
-    tth_offset: Tensor = field(metadata={'mult': 1, 'type': 'instrument', 'learnable': True})  # 2θ offset [°]
-    rho_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': False})   # Substrate SLD (Fixed/Nuisance)
-    sig_sub: Tensor = field(metadata={'mult': 1, 'type': 'physics', 'learnable': False})   # Substrate roughness (Fixed/Nuisance)
-
-    @classmethod
-    def names(cls) -> List[str]:
-        """
-        인스턴스 생성 없이 필드 이름 목록을 반환합니다.
-        외부에서 keys = ['d_f', ...] 하드코딩 대신 ParamSet.names() 사용 가능.
-        """
-        return [f.name for f in fields(cls)]
-
-    @classmethod
-    def learnable_names(cls) -> List[str]:
-        """학습 대상 파라미터 이름 반환"""
-        return [f.name for f in fields(cls) if f.metadata.get('learnable', True)]
-
-    @classmethod
-    def fixed_names(cls) -> List[str]:
-        """고정(Nuisance) 파라미터 이름 반환"""
-        return [f.name for f in fields(cls) if not f.metadata.get('learnable', True)]
-
-    @classmethod
-    def physics_names(cls) -> List[str]:
-        """물리 파라미터 이름만 반환"""
-        return [f.name for f in fields(cls) if f.metadata.get('type') == 'physics']
-
-    @classmethod
-    def instrument_names(cls) -> List[str]:
-        """기기 파라미터 이름만 반환"""
-        return [f.name for f in fields(cls) if f.metadata.get('type') == 'instrument']
-
-    def keys(self) -> Iterator[str]:
-        """필드 이름들에 대한 iterator 반환"""
-        return (f.name for f in fields(self))
-
-    def values(self) -> Iterator[Tensor]:
-        """텐서 값들에 대한 iterator 반환"""
-        return (getattr(self, f.name) for f in fields(self))
-
-    def items(self) -> Iterator[tuple[str, Tensor]]:
-        """(이름, 텐서) 쌍에 대한 iterator 반환"""
-        return ((f.name, getattr(self, f.name)) for f in fields(self))
-
+    def __getattr__(self, name: str) -> Tensor:
+        """Allow dot access: p.i0, p['Film.thickness']"""
+        if name in self._params:
+            return self._params[name]
+        # Fallback for old code: d_f -> Film.thickness? 
+        # For now, strict access only.
+        raise AttributeError(f"'DynamicParamSet' has no attribute '{name}'")
+    
     def __getitem__(self, key: str) -> Tensor:
-        return getattr(self, key)
+        return self._params[key]
 
-    def __contains__(self, key: str) -> bool:
-        # fields()를 직접 조회하여 효율적으로 체크
-        return any(f.name == key for f in fields(self))
+    def __setitem__(self, key: str, value: Tensor):
+        self._params[key] = value
 
-    def requires_grad_(self, requires_grad: bool = True) -> "ParamSet":
-        """In-place로 모든 텐서의 gradient 추적 설정"""
-        for v in self.values():
-            if isinstance(v, torch.Tensor):
-                v.requires_grad_(requires_grad)
+    @classmethod
+    def cat(cls, ps_list: list[DynamicParamSet]) -> DynamicParamSet:
+        """Concatenate a list of ParamSets along the batch dimension."""
+        if not ps_list:
+            raise ValueError("Empty ParamSet list")
+        
+        layer_names = ps_list[0].layer_names
+        device = ps_list[0].device
+        
+        merged_params = {}
+        keys = ps_list[0]._params.keys()
+        
+        for key in keys:
+            tensors = [ps[key] for ps in ps_list]
+            merged_params[key] = torch.cat(tensors, dim=0)
+            
+        return cls(merged_params, layer_names, device)
+
+    def to(self, device: torch.device) -> Self:
+        """Move all parameter tensors to the specified device."""
+        self.device = device
+        self._params = {k: v.to(device) for k, v in self._params.items()}
         return self
 
-    def get_optimized_copy(self) -> "ParamSet":
-        """
-        최적화(Refinement)를 위해 detach 및 clone된 
-        새로운 ParamSet 객체를 생성하고 gradient를 활성화합니다.
-        """
-        return ParamSet(**{
-            k: v.detach().clone().requires_grad_(True) 
-            for k, v in self.items()
-        })
+    def detach(self) -> Self:
+        return self.__class__(
+            {k: v.detach() for k, v in self._params.items()},
+            self.layer_names,
+            self.device
+        )
+    
+    def clone(self) -> Self:
+        return self.__class__(
+            {k: v.clone() for k, v in self._params.items()},
+            self.layer_names,
+            self.device
+        )
+        
+    def requires_grad_(self, mode: bool = True) -> Self:
+        for v in self._params.values():
+            v.requires_grad_(mode)
+        return self
 
     def assemble_structure(self) -> tuple[Tensor, Tensor, Tensor]:
         """
-        물리 시뮬레이션을 위한 텐서 조립
-        [FIX] Ambient 층을 명시적으로 추가하여 차원 불일치 해결
+        Construct the monolithic tensors required by the Abeles engine.
+        
+        Returns:
+            thickness: (B, N_layers + 1) [Ambient, L1, ..., LN]
+            roughness: (B, N_layers + 1) [Amb/L1, L1/L2, ..., LN/Sub]
+            sld:       (B, N_layers + 2) [Ambient, L1, ..., LN, Sub]
         """
-        device = self.d_f.device
-        batch_size = self.d_f.shape[0]
+        # Batch size check
+        first_key = next(iter(self._params))
+        batch_size = self._params[first_key].shape[0]
+
+        # 1. Thickness
+        # Ambient (0) + Layers
+        # Note: Abeles expects Ambient thickness to be 0 (or dummy).
+        t_amb = torch.zeros((batch_size, 1), device=self.device)
+        t_layers = [self._params[f"{name}.thickness"] for name in self.layer_names]
         
-        # 1. Thickness: [Ambient(0), Film, Oxide] -> Size 3
-        # Abeles 알고리즘은 0번 레이어를 Ambient로 가정하므로 0.0 추가 필수
-        ambient_thick = torch.zeros((batch_size, 1), device=device)
-        thickness = torch.cat([ambient_thick, self.d_f, self.d_ox], dim=-1).float()
+        thickness = torch.cat([t_amb] + t_layers, dim=1) # (B, 1+N)
+
+        # 2. Roughness
+        # Interfaces: Amb/L1, L1/L2, ..., LN/Sub
+        # We assume layer.roughness is the roughness of the interface ON TOP of the layer.
+        # Wait, usually roughness is associated with an interface.
+        # L1.roughness -> Amb/L1
+        # L2.roughness -> L1/L2
+        # Sub.roughness -> LN/Sub
         
-        # 2. Roughness: [Amb/Film, Film/Ox, Ox/Sub] -> Size 3 (Interfaces)
-        roughness = torch.cat([self.sig_f, self.sig_ox, self.sig_sub], dim=-1).float()
+        r_layers = [self._params[f"{name}.roughness"] for name in self.layer_names]
+        r_sub = self._params["Substrate.roughness"]
         
-        # 3. SLD: [Ambient, Film, Oxide, Substrate] -> Size 4
-        ambient_sld = torch.zeros((batch_size, 1), device=device)
-        sld = torch.cat([ambient_sld, self.rho_f, self.rho_ox, self.rho_sub], dim=-1).float()
+        roughness = torch.cat(r_layers + [r_sub], dim=1) # (B, N+1)
+
+        # 3. SLD
+        # Ambient + Layers + Substrate
+        # Ambient SLD is 0 (Air)
+        sld_amb = torch.zeros((batch_size, 1), device=self.device)
+        sld_layers = [self._params[f"{name}.sld"] for name in self.layer_names]
+        sld_sub = self._params["Substrate.sld"]
         
+        sld = torch.cat([sld_amb] + sld_layers + [sld_sub], dim=1) # (B, 1+N+1) = (B, N+2)
+
         return thickness, roughness, sld
-
-    @classmethod
-    def cat(cls, ps_list: list["ParamSet"]) -> "ParamSet":
-        """여러 조각의 ParamSet을 배치 차원(dim=0)으로 합침"""
-        merged = {}
-        for f in fields(cls):
-            tensors = [getattr(ps, f.name) for ps in ps_list]
-            merged[f.name] = torch.cat(tensors, dim=0)
-        return cls(**merged)
-
-    def clone(self) -> "ParamSet":
-        """모든 텐서 필드를 복제하여 새로운 ParamSet 객체 생성"""
-        return ParamSet(**{
-            f.name: getattr(self, f.name).clone() 
-            for f in fields(self)
-        })
-
-    def detach(self) -> "ParamSet":
-        """그래프에서 분리된(gradient 추적 중단) 복제본 생성"""
-        return ParamSet(**{
-            f.name: getattr(self, f.name).detach() 
-            for f in fields(self)
-        })
-
-    def to(self, device):
-        for f in fields(self):
-            v = getattr(self, f.name)
-            if isinstance(v, torch.Tensor):
-                setattr(self, f.name, v.to(device))
-        return self
-
-    def __repr__(self) -> str:
-        class_name = self.__class__.__name__
-        items = []
-        limit = 4 # 이 값보다 배치가 크면 요약 출력
-
-        for f in fields(self):
-            v = getattr(self, f.name)
-            match v:
-                case torch.Tensor():
-                    arr = v.detach().cpu().numpy()
-                    match arr.ndim:
-                        case 0:
-                            val = f"{arr.item():.4f}"
-                            if f.name == "bkg":
-                                val += f" (10^{arr.item():.2f})"
-                        case 1:
-                            val = f"[{', '.join(f'{x:.4f}' for x in arr)}]"
-                        case 2 if arr.shape[0] == 1:
-                            val = f"[{', '.join(f'{x:.4f}' for x in arr[0])}]"
-                        case 2 if arr.shape[0] > limit:
-                            # [Adaptive Repr] 앞 2개, 뒤 1개만 보여줌
-                            head = [f"S{i}: [{', '.join(f'{x:.2f}' for x in row)}]" for i, row in enumerate(arr[:2])]
-                            tail = [f"S{arr.shape[0]-1}: [{', '.join(f'{x:.2f}' for x in arr[-1])}]"]
-                            val = "\n      " + "\n      ".join(head + ["      ... (omitted)"] + tail)
-                        case 2:
-                            samples = [f"S{i}: [{', '.join(f'{x:.2f}' for x in row)}]" for i, row in enumerate(arr)]
-                            val = "\n      " + "\n      ".join(samples)
-                        case _:
-                            val = f"Tensor{list(arr.shape)}"
-                case _:
-                    val = str(v)
-            items.append(f"{f.name}={val}")
-
-        return f"{class_name}(\n    " + ",\n    ".join(items) + "\n)"
+    
+    # Backward compatibility shim for 'ParamSet'
+    # We alias DynamicParamSet to ParamSet so imports don't break immediately
+    # but the content is different.
+    
+ParamSet = DynamicParamSet

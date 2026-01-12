@@ -143,6 +143,9 @@ class ViTEncoder(nn.Module):
         return self.head(cls_out)
 
 
+from xrefine.models import register_model
+
+@register_model("vit")
 class XRR_ViT_PINN(BasePINNModel):
     """
     Vision Transformer 기반 PINN 모델.

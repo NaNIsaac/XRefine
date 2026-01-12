@@ -1,9 +1,8 @@
-# XRefine Configuration File
-# ==========================
+# XRefine Configuration File (v2.0 - Dynamic Layers)
+# ====================================================
 
 # [General Settings]
-experiment_name: "temp"
-# save_root: "C:\\Warehouse\\data\\XRR_AI\\transformer"
+experiment_name: "XRefine_ViT_Dynamic_v1"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
@@ -21,25 +20,38 @@ instrument:
   I0: 1.0
   Ibkg_init: 1.0e-07
 
-# [Physical Ranges] - ParamSet과 1:1 매칭
-ranges:
-  d_f: [10.0, 1000.0]
-  sig_f: [0.5, 20.0]
-  rho_f: [5.0, 100.0]
-  d_ox: [1.0, 50.0]
-  sig_ox: [0.5, 10.0]
-  rho_ox: [14.0, 20.0]
-  
-  # Instrumental Ranges
-  L: [9.0, 15.0]
-  beam_width: [0.01, 0.3]
-  bkg: [-9.0, -4.0]
-  i0: [0.8, 1.2]
-  dq: [0.0005, 0.01]        # Resolution [A^-1]
-  tth_offset: [-0.05, 0.05] # 2theta offset [deg]
-  
-  rho_sub: [19.0, 21.1]    # Substrate SLD (Si ~20.1, ±1)
-  sig_sub: [0.5, 5.0]       # Substrate roughness [Å]
+# =============================================================================
+# [Sample Configuration] - The New Dynamic System
+# =============================================================================
+# Stack Order: Top (Surface) -> Bottom (Substrate)
+sample:
+  # 1. Global / Instrumental Parameters (Sample-specific)
+  L: [9.0, 15.0]             # Sample Length [mm]
+  beam_width: [0.01, 0.3]    # Effective Beam Width [mm]
+  bkg: [-9.0, -4.0]          # Log10 Background
+  i0: [0.8, 1.2]             # Intensity Scale
+  dq: [0.0005, 0.01]         # Resolution [A^-1]
+  tth_offset: [-0.05, 0.05]  # 2theta offset [deg]
+
+  # 2. Substrate
+  substrate:
+    name: "Si"
+    roughness: [0.5, 5.0]    # Interface roughness (Film/Sub)
+    sld: [19.0, 21.1]        # Si ~20.1
+
+  # 3. Layers (Ordered Top to Bottom)
+  layers:
+    - name: "Oxide"          # Top Layer (e.g. SiO2)
+      thickness: [1.0, 50.0]
+      roughness: [0.5, 10.0] # Interface roughness (Amb/Oxide)
+      sld: [14.0, 20.0]
+      repeats: 1
+
+    - name: "Film"           # Main Film
+      thickness: [10.0, 1000.0]
+      roughness: [0.5, 20.0] # Interface roughness (Oxide/Film)
+      sld: [5.0, 100.0]
+      repeats: 1
 
 # [Augmentation Config]
 augmentations:
@@ -53,7 +65,7 @@ augmentations:
 # [Training Hyperparameters]
 train:
   batch_size: 32
-  lr: 0.0005177
+  lr: 0.0005
   weight_decay: 1.0e-4
   epochs: 300
   steps_per_epoch: 100
@@ -61,83 +73,33 @@ train:
   
   # Curriculum & Physics Loss
   sup_w_start: 10000.0
-  sup_w_end: 100.0     # 1 → 100 (Supervision 유지)
+  sup_w_end: 100.0
   phys_penalty_w: 0.8579
 
-  # Loss Component Weights (Reconstruction)
-  w_linear: 1.0       # 100 → 10 (Linear 영향력 감소)
-  w_gradient: 50.0     # Fringe 패턴/두께 집중
-  w_log_base: 50.0     # 10 → 50 (Log 기반 손실 강화)
-
-  # Parameter-specific Weights
-weights:
-
-  i0: 1.0
-  d_f: 10.0
-  rho_f: 5.0
-  sig_f: 5.0
-  d_ox: 1.0
-
-  rho_ox: 1.0
-  sig_ox: 1.0
-  bkg: 1.0
-  tth_offset: 0
-  rho_sub: 0.0      
-  sig_sub: 0.0      
-
-  dq: 0.0
-  L: 0.0
-  beam_width: 0.0
+  # Loss Component Weights
+  w_linear: 1.0
+  w_gradient: 50.0
+  w_log_base: 50.0
 
 # =============================================================================
 # [Model Architecture]
 # =============================================================================
 model:
-  # ┌──────────────────────────────────────────────────────────────────────────┐
-  # │ model_type: 사용할 모델 종류                                               │
-  # │  - "vit"        : Vision Transformer (패치 + Fourier, 권장)               │
-  # │  - "transformer": Transformer-VAE (Fourier만)                             │
-  # │  - "cnn"        : Fourier-CNN (레거시)                                    │
-  # └──────────────────────────────────────────────────────────────────────────┘
   model_type: "vit"
   
-  # ───────────────────────────────────────────────────────────────────────────
-  # 공통 설정 (모든 모델)
-  # ───────────────────────────────────────────────────────────────────────────
-  hidden_dim: 256       # 임베딩/채널 차원
-  encoder_depth: 6      # Transformer/CNN 레이어 수
-  n_layers: 1           # 예측할 박막 층 수
-  dropout: 0.15         # 드롭아웃 비율
+  hidden_dim: 256
+  encoder_depth: 6
+  n_layers: 2           # [INFO] Total layers (Oxide + Film)
+  dropout: 0.15
   
-  # ───────────────────────────────────────────────────────────────────────────
-  # Fourier Feature 설정 (ViT, Transformer 공통)
-  # ───────────────────────────────────────────────────────────────────────────
-  # mapping_size: Fourier 차원 수 (0 = Fourier 비활성화)
-  #   - 높을수록 표현력 증가, 계산량 증가
-  #   - 권장: 64~128
+  # Fourier (Disabled)
   mapping_size: 0
-  
-  # fourier_scale: 랜덤 주파수의 스케일
-  #   - 높을수록 고주파(미세 Fringe) 포착
-  #   - 낮을수록 저주파(부드러운 곡선) 포착
-  #   - 권장: 30~60
   fourier_scale: 50.0
   
-  # ───────────────────────────────────────────────────────────────────────────
-  # Transformer/ViT 공통 설정
-  # ───────────────────────────────────────────────────────────────────────────
-  n_heads: 8            # Attention Head 수 (hidden_dim / n_heads = head_dim)
-  dim_feedforward: 1024 # FFN 확장 차원 (보통 hidden_dim * 4)
-  activation: "gelu"    # 활성화 함수 (gelu, relu)
+  # Transformer Settings
+  n_heads: 8
+  dim_feedforward: 1024
+  activation: "gelu"
   
-  # ───────────────────────────────────────────────────────────────────────────
-  # ViT 전용 설정
-  # ───────────────────────────────────────────────────────────────────────────
-  patch_size: 16        # 패치 크기 (16 Q-포인트를 하나의 토큰으로)
-  
-  # ───────────────────────────────────────────────────────────────────────────
-  # CNN 전용 설정 (레거시)
-  # ───────────────────────────────────────────────────────────────────────────
-  kernel_size: 21
-  dilation: 2
-  n_channels: 128
+  # ViT Patching
+  patch_size: 16

@@ -99,6 +99,9 @@ class TransformerVAEEncoder(nn.Module):
         return z, mu, logvar
 
 
+from xrefine.models import register_model
+
+@register_model("transformer")
 class XRR_Transformer_PINN(BasePINNModel):
     """
     Transformer-VAE 기반 PINN 모델.

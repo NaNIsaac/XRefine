@@ -1,54 +1,52 @@
 """
-XRefine Models
-==============
-PINN 모델 및 공통 컴포넌트 Export
+XRefine Models Registry
+=======================
+Decorator-based model registration for easy extension.
 """
+from typing import Dict, Type, Callable
+from .common import BasePINNModel
+
+# Registry for PINN models
+MODEL_REGISTRY: Dict[str, Type[BasePINNModel]] = {}
+
+def register_model(name: str):
+    """Decorator to register a model class in the registry."""
+    def decorator(cls: Type[BasePINNModel]):
+        MODEL_REGISTRY[name.lower()] = cls
+        return cls
+    return decorator
+
+def get_model(config) -> BasePINNModel:
+    """Factory function to create a model instance from config."""
+    model_type = config.model.model_type.lower()
+    if model_type not in MODEL_REGISTRY:
+        # Import all models to ensure registration
+        from .vit import XRR_ViT_PINN
+        from .transformer import XRR_Transformer_PINN
+        from .fourier_model import XRR_Fourier_PINN
+        
+    if model_type not in MODEL_REGISTRY:
+        raise ValueError(
+            f"Model type '{model_type}' not found. "
+            f"Available models: {list(MODEL_REGISTRY.keys())}"
+        )
+    
+    return MODEL_REGISTRY[model_type](config)
+
+# Exporting components
 from .common import (
     BasePINNModel,
     FourierFeatureMapping,
     PositionalEncoding,
     PatchEmbed1D,
 )
-from .fourier_model import XRR_Fourier_PINN, DilatedCNNEncoder
-from .transformer import XRR_Transformer_PINN, TransformerVAEEncoder
-from .vit import XRR_ViT_PINN, ViTEncoder
-
-# Model Registry (Factory Pattern)
-MODEL_REGISTRY = {
-    'cnn': XRR_Fourier_PINN,
-    'transformer': XRR_Transformer_PINN,
-    'vit': XRR_ViT_PINN,
-}
-
-
-def get_model(config):
-    """
-    Config에서 model_type을 읽어 해당 모델 인스턴스 반환.
-    
-    Usage:
-        model = get_model(config)
-    """
-    model_type = config.model.model_type
-    if model_type not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model type: {model_type}. Available: {list(MODEL_REGISTRY.keys())}")
-    return MODEL_REGISTRY[model_type](config)
-
 
 __all__ = [
-    # Base
     "BasePINNModel",
-    "FourierFeatureMapping", 
-    "PositionalEncoding",
-    "PatchEmbed1D",
-    # Models
-    "XRR_Fourier_PINN",
-    "XRR_Transformer_PINN", 
-    "XRR_ViT_PINN",
-    # Encoders
-    "DilatedCNNEncoder",
-    "TransformerVAEEncoder",
-    "ViTEncoder",
-    # Factory
+    "register_model",
     "get_model",
     "MODEL_REGISTRY",
+    "FourierFeatureMapping",
+    "PositionalEncoding",
+    "PatchEmbed1D",
 ]

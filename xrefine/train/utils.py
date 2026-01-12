@@ -1,5 +1,4 @@
-from typing import Dict, List, Optional
-from dataclasses import fields
+from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
 import torch
@@ -10,9 +9,36 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 
 from xrefine.core.structures import ParamSet
-from xrefine.config import XRefineConfig
+from xrefine.config import XRefineConfig, SampleConfig
 
 plt.switch_backend('Agg')
+
+def get_param_range(config: XRefineConfig, key: str) -> Tuple[float, float]:
+    """
+    Dynamically resolve parameter range [min, max] from key string.
+    Key examples: 'Film.thickness', 'Substrate.roughness', 'i0'
+    """
+    parts = key.split('.')
+    
+    # 1. Global/Instrument Params
+    if len(parts) == 1:
+        if hasattr(config.sample, key):
+            return getattr(config.sample, key)
+        # Fallback for old/unknown keys?
+        return (0.0, 1.0)
+    
+    # 2. Layer/Substrate Params
+    obj_name, attr = parts[0], parts[1]
+    
+    if obj_name == "Substrate":
+        return getattr(config.sample.substrate, attr)
+    
+    # Check Layers
+    for layer in config.sample.layers:
+        if layer.name == obj_name:
+            return getattr(layer, attr)
+            
+    return (0.0, 1.0) # Fallback
 
 class XRRWeightedLoss(nn.Module):
     def __init__(self, q_grid: torch.Tensor):
@@ -29,24 +55,24 @@ class XRRWeightedLoss(nn.Module):
                 phys_penalty: torch.Tensor):
         
         # -----------------------------------------------------------
-        # 1. 전처리 (Masking & Scaling)
+        # 1. Preprocessing
         # -----------------------------------------------------------
         mask = (log_r_target > -10.0).float()
         valid_points = mask.sum() + 1e-9
         
+        # r_recon comes in Linear Scale from model.simulate
         log_r_recon = torch.log10(torch.clamp(r_recon, min=1e-11))
         
-        # Linear Scale (I0 Fitting용)
         r_target_linear = torch.pow(10.0, log_r_target)
         r_recon_linear = r_recon
 
         # -----------------------------------------------------------
-        # 2. [Tier 1] Linear Loss (I0 & Critical Angle 집중)
+        # 2. Linear Loss
         # -----------------------------------------------------------
         loss_linear = torch.sum(((r_recon_linear - r_target_linear)**2) * mask) / valid_points
 
         # -----------------------------------------------------------
-        # 3. [Tier 2] Log Gradient Loss (Fringe 패턴/두께 집중)
+        # 3. Log Gradient Loss
         # -----------------------------------------------------------
         diff_recon = torch.diff(log_r_recon, dim=-1)
         diff_target = torch.diff(log_r_target, dim=-1)
@@ -55,28 +81,38 @@ class XRRWeightedLoss(nn.Module):
         loss_grad = torch.sum(((diff_recon - diff_target)**2) * diff_mask) / (diff_mask.sum() + 1e-9)
 
         # -----------------------------------------------------------
-        # 4. [Tier 3] Base Log MSE (전체적인 경향성)
+        # 4. Base Log MSE
         # -----------------------------------------------------------
         loss_log_base = torch.sum(((log_r_recon - log_r_target)**2) * mask) / valid_points
 
         # -----------------------------------------------------------
-        # 5. [Tier 4] Parameter Supervision
+        # 5. Parameter Supervision (Dynamic)
         # -----------------------------------------------------------
-        loss_param = 0
-        w_set = config.get_weight_set(device=log_r_target.device)
-        # [FIX] Learnable Params만 Loss 계산
-        for key in ParamSet.learnable_names():
-            fld = next(f for f in fields(ParamSet) if f.name == key)
-            p_min, p_max = getattr(config.ranges, key)
-            norm_pred = (getattr(p_pred, key) - p_min) / (p_max - p_min + 1e-9)
-            norm_true = (getattr(p_true, key) - p_min) / (p_max - p_min + 1e-9)
+        loss_param = torch.tensor(0.0, device=log_r_target.device)
+        
+        # We assume p_true has all keys that p_pred has
+        for key in p_pred._params.keys():
+            # Skip non-learnable or fixed params if we track them?
+            # DynamicParamSet usually only contains learnable stuff + sampled globals.
             
-            w_val = getattr(w_set, key) if hasattr(w_set, key) else 1.0
-            if isinstance(w_val, torch.Tensor): w_val = w_val.item()
-            loss_param += F.mse_loss(norm_pred, norm_true) * w_val
+            p_min, p_max = get_param_range(config, key)
+            
+            val_pred = p_pred[key]
+            val_true = p_true[key]
+            
+            # Normalize to 0-1 for balanced loss
+            norm_pred = (val_pred - p_min) / (p_max - p_min + 1e-9)
+            norm_true = (val_true - p_min) / (p_max - p_min + 1e-9)
+            
+            # Weighting: check config.train.weights logic
+            # For now simple 1.0 or generic weight
+            w_val = 1.0
+            # If we want specific weights, we'd look them up in config.train.weights.layer_weights
+            
+            loss_param = loss_param + F.mse_loss(norm_pred, norm_true) * w_val
 
         # -----------------------------------------------------------
-        # 6. 최종 Loss 조합 (Config에서 가중치 로드)
+        # 6. Total Loss
         # -----------------------------------------------------------
         w_linear = getattr(config.train, 'w_linear', 100.0)
         w_gradient = getattr(config.train, 'w_gradient', 50.0)
@@ -120,14 +156,13 @@ def save_pinn_report(
     step: int
 ):
     """
-    PINN 상태 종합 리포트 생성 (불필요한 Residual 제거 및 Parameter 비교 강화)
+    PINN Status Report (Dynamic)
     """
     fig = plt.figure(figsize=(16, 8))
     gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1.2])
 
-    # 1. [Left] 학습 곡선 (Convergence)
+    # 1. Learning Curves
     ax0 = plt.subplot(gs[0])
-    # 최근 1000 스텝만 표시 (너무 길면 변동 안보임)
     recent_loss = loss_history[-1000:] if len(loss_history) > 1000 else loss_history
     ax0.plot(recent_loss, color='#2c3e50', lw=1.5)
     ax0.set_yscale('log')
@@ -136,15 +171,13 @@ def save_pinn_report(
     ax0.set_ylabel("Total Loss")
     ax0.grid(True, alpha=0.2)
 
-    # 2. [Right] XRR Profile Fitting
+    # 2. XRR Profile
     ax1 = plt.subplot(gs[1])
     q_np = q_grid.cpu().numpy()
     
-    # Batch의 첫 번째 샘플 시각화
     y_target = target_log_r[0].detach().cpu().numpy()
     y_recon = torch.log10(torch.clamp(r_recon[0], min=1e-11)).detach().cpu().numpy()
 
-    # 데이터가 겹치는지 확인하기 위해 스타일 차별화
     ax1.plot(q_np, y_target, 'k-', lw=1, alpha=0.2, label='Target (Truth)')
     ax1.plot(q_np, y_recon, 'r--', lw=1.5, label='PINN Prediction')
     
@@ -154,29 +187,41 @@ def save_pinn_report(
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
 
-    # 3. 파라미터 텍스트 오버레이 (그래프 위에 띄우기)
-    # 실제값과 예측값을 나란히 비교하여 출력
+    # 3. Dynamic Parameter Text
     info_lines = [f"STEP: {step:04d}"]
     
     if params_true:
-        info_lines.append("\n--- Key Parameters (Pred vs True) ---")
-        # 주요 파라미터만 선별 출력
-        keys = ['d_f', 'sig_f', 'rho_f', 'd_ox']
-        for k in keys:
-            v_p = getattr(params_pred, k)[0].item()
-            v_t = getattr(params_true, k)[0].item()
+        info_lines.append("\n--- Parameters (Pred vs True) ---")
+        # Sort keys to group by layer?
+        keys = sorted(list(params_pred._params.keys()))
+        
+        # Limit display if too many params
+        display_keys = keys[:15] # Show top 15
+        
+        for k in display_keys:
+            v_p = params_pred[k][0].item()
+            v_t = params_true[k][0].item()
+            
+            # Formatting logic
+            fmt = ".1f"
+            if "dq" in k or "i0" in k: fmt = ".4f"
+            
             err = abs(v_p - v_t) / (abs(v_t) + 1e-9) * 100
-            info_lines.append(f"{k:<6}: {v_p:6.1f} | {v_t:6.1f} (Err: {err:4.1f}%)")
-    else:
-        info_lines.append(f"\nPRED:\n{params_pred}")
+            
+            # Shorten key name for display
+            short_k = k.replace("thickness", "d").replace("roughness", "sig").replace("sld", "rho")
+            
+            info_lines.append(f"{short_k:<15}: {v_p:{fmt}} | {v_t:{fmt}} (Err: {err:4.1f}%)")
+            
+        if len(keys) > 15:
+            info_lines.append(f"... and {len(keys)-15} more")
 
     info_text = "\n".join(info_lines)
     
-    # 텍스트 박스 위치: 왼쪽 하단
-    plt.gcf().text(0.02, 0.02, info_text, fontsize=10, family='monospace', 
+    plt.gcf().text(0.02, 0.02, info_text, fontsize=9, family='monospace', 
         bbox=dict(facecolor='white', alpha=0.9, edgecolor='#34495e', boxstyle='round,pad=0.5'),
         verticalalignment='bottom')
 
-    plt.tight_layout(rect=[0, 0.0, 1, 0.95]) # 텍스트 공간 확보
+    plt.tight_layout(rect=[0, 0.0, 1, 0.95])
     plt.savefig(save_path, dpi=120)
     plt.close('all')

@@ -1,42 +1,39 @@
-import argparse
+"""
+XRefine CLI
+==========
+Main entry point for XRefine using Typer.
+"""
+import typer
+import ast
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Optional, Dict, Any
+from typing_extensions import Annotated
 
 from xrefine.config import XRefineConfig, CONFIG
 from xrefine.train import XRefineTrainer
 from xrefine.evaluate import XRREvaluator 
-from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN, XRR_ViT_PINN
+from xrefine.models import get_model
 from xrefine.logger import logger
 
-def get_model(config: XRefineConfig):
-    """Config의 model_type에 따라 적절한 모델 인스턴스 반환"""
-    model_type = config.model.model_type.lower()
-    
-    if model_type == 'vit':
-        logger.info("Initializing Model: ViT PINN")
-        return XRR_ViT_PINN(config=config).to(config.device)
-    
-    elif model_type == 'transformer':
-        logger.info("Initializing Model: Transformer-VAE PINN")
-        return XRR_Transformer_PINN(config=config).to(config.device)
-    
-    elif model_type == 'cnn':
-        logger.info("Initializing Model: Fourier-CNN PINN")
-        return XRR_Fourier_PINN(config=config, device=config.device).to(config.device)
-    
-    else:
-        raise ValueError(f"Unknown model type: {model_type}. Choose 'vit', 'transformer', or 'cnn'.")
+app = typer.Typer(help="XRefine: Physics-Informed AI for XRR Analysis")
 
-def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[str, Any]:
-    """CLI 인자를 계층적 dict로 변환 (config. 접두사 자동 처리)"""
+def merge_unknown_args(config_obj: XRefineConfig, unknown: List[str]) -> XRefineConfig:
+    """CLI 인자를 계층적 dict로 변환하여 Config 객체 업데이트"""
+    config_dict = config_obj.model_dump() 
+    
     for i in range(0, len(unknown), 2):
         if not unknown[i].startswith('--'):
             continue
         
         key = unknown[i].lstrip('-')
+        if i + 1 >= len(unknown):
+            logger.warning(f"No value provided for option '{key}'")
+            continue
+            
         value_str = unknown[i+1]
         parts = key.split('.')
 
+        # 'config.' 접두사 무시 (하위 호환성)
         if parts[0] == 'config' and len(parts) > 1:
             parts = parts[1:]
 
@@ -46,11 +43,11 @@ def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[
                 target[part] = {}
             target = target[part]
 
+        # 자동 타입 변환
         try:
             if value_str.lower() in ('true', 'false'):
                 val = value_str.lower() == 'true'
-            elif '[' in value_str:
-                import ast
+            elif value_str.startswith('[') and value_str.endswith(']'):
                 val = ast.literal_eval(value_str)
             elif '.' in value_str or 'e' in value_str:
                 val = float(value_str)
@@ -60,9 +57,10 @@ def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[
             val = value_str
             
         target[parts[-1]] = val
-    return config_dict
+        
+    return XRefineConfig(**config_dict)
 
-def format_config_summery(config: XRefineConfig) -> str:
+def format_config_summary(config: XRefineConfig) -> str:
     """현재 세션의 핵심 파라미터 요약 출력"""
     lines: list[str] = []
     line = "=" * 60
@@ -73,88 +71,69 @@ def format_config_summery(config: XRefineConfig) -> str:
     lines.append(f"Device     : {config.device}")
     
     lines.append(f"{'-'*60}")
-    lines.append(f"{'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")
+    lines.append(f"{ 'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")
     lines.append(f"{'-'*60}")
-    lines.append(f"{'Training':<12} | {'LR':<15} | {config.train.lr:.1e}")
-    lines.append(f"{'Training':<12} | {'Batch Size':<15} | {config.train.batch_size}")
-    lines.append(f"{'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
-    
-    # 모델 타입에 따른 파라미터 출력 분기
-    if config.model.model_type == 'transformer':
-        lines.append(f"{'Model':<12} | {'Hidden Dim':<15} | {config.model.hidden_dim}")
-        lines.append(f"{'Model':<12} | {'Enc Depth':<15} | {config.model.encoder_depth}")
-        lines.append(f"{'Model':<12} | {'Heads':<15} | {config.model.n_heads}")
-    else:
-        lines.append(f"{'Model':<12} | {'Mapping Size':<15} | {config.model.mapping_size}")
-        lines.append(f"{'Model':<12} | {'Fourier Scale':<15} | {config.model.fourier_scale}")
+    lines.append(f"{ 'Training':<12} | {'LR':<15} | {config.train.lr:.1e}")
+    lines.append(f"{ 'Training':<12} | {'Batch Size':<15} | {config.train.batch_size}")
+    lines.append(f"{ 'Training':<12} | {'Total Epochs':<15} | {config.train.epochs}")
     
     lines.append(f"{'-'*60}")
-    lines.append(f"Physics Ranges (d_f) : {config.ranges.d_f} [Å]")
+    lines.append(f"Sample Structure:")
+    for layer in config.sample.layers:
+        lines.append(f"  - {layer.name:<10}: d={layer.thickness} Å")
+    lines.append(f"Substrate: {config.sample.substrate.name} (SLD={config.sample.substrate.sld})")
     lines.append(f"{line}\n")
 
     return "\n".join(lines)
 
-def run_train(config: XRefineConfig, resume: bool):
-    """학습 세션 실행"""
-    logger.info("\n" + format_config_summery(config))
-    
-    save_dir = config.save_root / config.experiment_name
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    config.save_yaml(save_dir / "config.yaml")
+@app.command()
+def train(
+    ctx: typer.Context,
+    cfg: Annotated[Path, typer.Option("--cfg", help="Path to config.yaml")] = Path("config.yaml"),
+    resume: Annotated[bool, typer.Option("--resume", help="Resume from last checkpoint")] = False,
+):
+    """Start a PINN training session."""
+    try:
+        config_obj = XRefineConfig.load_yaml(cfg)
+    except FileNotFoundError:
+        logger.warning(f"{cfg} not found. Using default CONFIG object.")
+        config_obj = CONFIG
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}")
+        config_obj = CONFIG
 
-    # [Refactored] 모델 생성 팩토리 사용
-    model = get_model(config)
+    # Handle unknown arguments for dynamic config overrides
+    if ctx.args:
+        config_obj = merge_unknown_args(config_obj, ctx.args)
+
+    logger.info("\n" + format_config_summary(config_obj))
     
-    trainer = XRefineTrainer(model=model, config=config)
+    save_dir = config_obj.save_root / config_obj.experiment_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    config_obj.save_yaml(save_dir / "config.yaml")
+
+    # Initialize Model using Registry
+    model = get_model(config_obj).to(config_obj.device)
+    
+    trainer = XRefineTrainer(model=model, config=config_obj)
     trainer.fit(resume=resume)
     logger.info("Training session completed successfully.")
 
-def run_eval(config: XRefineConfig, checkpoint: str | None, batch_size: int):
-    """평가 세션 실행"""
-    ckpt_path = checkpoint or str(config.save_root / config.experiment_name / "best.pt")
-    if not Path(ckpt_path).exists():
-        logger.error(f"❌ Checkpoint not found: {ckpt_path}")
-        return
-
-    logger.info(f"🔍 [EVAL] Using checkpoint: {ckpt_path}")
-    
-    # Evaluator 내부에서 Checkpoint의 config를 로드하여 적절한 모델을 재구성한다고 가정
-    # (Evaluator가 config.yaml을 로드하거나 ckpt['config']를 사용해야 함)
-    evaluator = XRREvaluator(checkpoint_path=ckpt_path, batch_size=batch_size)
+@app.command()
+def eval(
+    checkpoint: Annotated[Optional[str], typer.Option("--checkpoint", help="Path to checkpoint .pt file")] = None,
+    batch_size: Annotated[int, typer.Option("--batch-size", help="Evaluation batch size")] = 1000,
+):
+    """Evaluate a trained model on synthetic or real data."""
+    logger.info(f"Starting evaluation with checkpoint: {checkpoint}")
+    evaluator = XRREvaluator(checkpoint_path=checkpoint, batch_size=batch_size)
     evaluator.setup()
     evaluator.evaluate_all()
 
-def main():
-    parser = argparse.ArgumentParser(description="XRefine: Physics-Informed AI for XRR")
-    parser.add_argument("subcommand", choices=["train", "eval", "config"], help="작업 모드 선택")
-    parser.add_argument("--cfg", type=str, default="config.yaml", help="기본 설정 파일 경로")
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--checkpoint", type=str)
-    parser.add_argument("--batch_size", type=int, default=1000)
-    
-    args, unknown = parser.parse_known_args()
-
-    try:
-        config_obj = XRefineConfig.load_yaml(args.cfg)
-    except FileNotFoundError:
-        logger.warning(f"{args.cfg} not found. Using default CONFIG object.")
-        config_obj = CONFIG
-
-    if unknown:
-        config_dict = config_obj.model_dump()
-        updated_dict = merge_unknown_args(config_dict, unknown)
-        config_obj = XRefineConfig(**updated_dict)
-
-    match args.subcommand:
-        case "train":
-            run_train(config_obj, args.resume)
-        case "eval":
-            run_eval(config_obj, args.checkpoint, args.batch_size)
-        case "config":
-            print(config_obj.model_dump_json(indent=2))
-        case _:
-            parser.print_help()
+@app.command()
+def config_show():
+    """Print the current default configuration in JSON format."""
+    print(CONFIG.model_dump_json(indent=2))
 
 if __name__ == "__main__":
-    main()
+    app()

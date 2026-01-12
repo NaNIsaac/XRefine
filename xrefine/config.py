@@ -1,88 +1,123 @@
 import torch
 import yaml
 from pathlib import Path
-from typing import Literal, Self, Tuple, Optional
+from typing import Literal, Self, Tuple, Optional, List, Annotated
 from pydantic import BaseModel, Field, ConfigDict, field_validator, field_serializer, PrivateAttr
 
 from xrefine.physics_utils import tth2q
-from xrefine.core.structures import ParamSet
+# We will refactor ParamSet later, but for now we keep the import to avoid breaking everything immediately
+# effectively we are breaking compatibility here, but it's part of the plan.
+# from xrefine.core.structures import ParamSet 
 
-# 1. 장비 사양 설정
+# Helper Type for Ranges [min, max]
+Range = Annotated[List[float], Field(min_length=2, max_length=2)]
+
+# ==============================================================================
+# 1. Physical Structure Configuration (Dynamic Layers)
+# ==============================================================================
+
+class MaterialConfig(BaseModel):
+    """Configuration for a single material property (SLD, Roughness)."""
+    sld: Range
+    roughness: Range
+
+class LayerConfig(BaseModel):
+    """Configuration for a single layer in the stack."""
+    name: str
+    thickness: Range
+    roughness: Range
+    sld: Range
+    repeats: int = Field(default=1, ge=1, description="Number of times this layer repeats")
+    
+    # Optional: Link parameters? (e.g. if repeats>1, are they identical or independent?)
+    # For now, assume independent stochastic sampling or identical? 
+    # Usually in PINN training we sample ONCE for a batch item.
+    # If repeats=10, we usually mean a Superlattice where d_1...d_10 are identical or coupled.
+    # Let's assume coupled (identical) for now to keep parameter space small.
+
+class SubstrateConfig(BaseModel):
+    name: str = "Substrate"
+    roughness: Range
+    sld: Range
+
+class AmbientConfig(BaseModel):
+    name: str = "Ambient"
+    sld: float = 0.0 # Usually fixed 0 for air
+    # Ambient roughness is effectively the top layer's roughness in some formalisms, 
+    # but in Abeles, roughness is an interface property.
+    # We assign roughness to the interface BELOW the layer.
+    # So Ambient doesn't have a roughness, the Top Layer has a roughness (Amb/Top interface).
+
+class SampleConfig(BaseModel):
+    """
+    Complete sample definition replacing the old flat PhysicalRangeConfig.
+    """
+    ambient: AmbientConfig = Field(default_factory=AmbientConfig)
+    substrate: SubstrateConfig
+    layers: List[LayerConfig]
+    
+    # Global/Instrumental parameters that vary per sample
+    L: Range = Field(default=[5.0, 25.0], description="Sample Length [mm]")
+    beam_width: Range = Field(default=[0.01, 0.3], description="Beam Width [mm]")
+    bkg: Range = Field(default=[-9.0, -5.0], description="Background Log10")
+    i0: Range = Field(default=[0.8, 1.2], description="Intensity Scale")
+    dq: Range = Field(default=[0.0005, 0.01], description="Resolution [A^-1]")
+    tth_offset: Range = Field(default=[-0.05, 0.05], description="TwoTheta Offset [deg]")
+
+# ==============================================================================
+# 2. Existing Configs (Refined)
+# ==============================================================================
+
 class InstrumentConfig(BaseModel):
-    wavelength: float = 1.5406  # Cu K-alpha [Å]
-    beam_width: float = 0.1     # [mm]
-    res: float = 0.002          # dq resolution [Å^-1]
-    I0: float = 1.0             # Intensity scaling
-    Ibkg_init: float = 1e-7     # Initial background noise
+    wavelength: float = 1.5406
+    beam_width: float = 0.1
+    res: float = 0.002
+    I0: float = 1.0
+    Ibkg_init: float = 1e-7
 
-# 2. 데이터 증강 하이퍼파라미터
 class AugmentationConfig(BaseModel):
     intensity_noise_scale: float = 0.2
-    bg_range: Tuple[float, float] = (-9.0, -5.0)  # Log10 scale
-    res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
+    bg_range: Range = [-9.0, -5.0]
+    res_sigma_range: Range = [0.0001, 0.005]
     q_shift_sigma: float = 0.001
     beam_profile: Literal['gaussian', 'square'] = 'gaussian'
-    measure_step_range: Tuple[float, float] = (0.001, 0.1) # Variable Step Size (Degrees 2theta)
+    measure_step_range: Range = [0.001, 0.1]
 
-# 3. 모델 아키텍처 설정
 class ModelArchConfig(BaseModel):
-    model_type: Literal['cnn', 'transformer', 'vit'] = 'vit'  # Default: ViT
+    model_type: Literal['cnn', 'transformer', 'vit'] = 'vit'
+    hidden_dim: int = 128
+    encoder_depth: int = 4
     
-    # 공통 하이퍼파라미터
-    hidden_dim: int = 128       # d_model
-    encoder_depth: int = 4      # Number of Transformer layers
-    
-    # CNN 전용 (Fourier PINN)
+    # CNN specific
     kernel_size: int = 15
     dilation: int = 2
     fourier_scale: float = 40.0
-    mapping_size: int = 64
+    mapping_size: int = 0 # Default to 0 as per recent fix
     
-    # Transformer/ViT 공통
-    n_heads: int = 4            # Attention Heads
-    dim_feedforward: int = 512  # FFN expansion
+    # Transformer/ViT
+    n_heads: int = 4
+    dim_feedforward: int = 512
     dropout: float = 0.1
     activation: str = 'gelu'
-    n_layers: int = 1           # Number of film layers
     
-    # ViT 전용
-    patch_size: int = 16        # Patch size for ViT embedding
+    # ViT specific
+    patch_size: int = 16
 
-# 4. 물리 파라미터 샘플링 범위
-class PhysicalRangeConfig(BaseModel):
-    d_f: Tuple[float, float] = (10.0, 1000.0)
-    sig_f: Tuple[float, float] = (0.5, 20.0)
-    rho_f: Tuple[float, float] = (5.0, 100.0)
-    d_ox: Tuple[float, float] = (0.0, 50.0)
-    sig_ox: Tuple[float, float] = (0.5, 10.0)
-    rho_ox: Tuple[float, float] = (14.0, 20.0)
-    L: Tuple[float, float] = (5.0, 25.0)
-    beam_width: Tuple[float, float] = (0.01, 0.3)
-    bkg: Tuple[float, float] = (-9.0, -5.0)
-    i0: Tuple[float, float] = (0.8, 1.2)
-    dq: Tuple[float, float] = (0.0005, 0.01)
-    tth_offset: Tuple[float, float] = (-0.05, 0.05)
-    rho_sub: Tuple[float, float] = (18.0, 22.0)  # Substrate SLD
-    sig_sub: Tuple[float, float] = (0.5, 5.0)     # Substrate roughness [Å]
-
-# 5. 파라미터별 손실 함수 가중치
 class WeightConfig(BaseModel):
-    d_f: float = 1.0
-    sig_f: float = 1.0
-    rho_f: float = 1.0
-    d_ox: float = 0.5
-    sig_ox: float = 0.5
-    rho_ox: float = 0.5
-    L: float = 5.0
-    i0: float = 1.0
-    bkg: float = 1.0
-    beam_width: float = 10.0
-    dq: float = 1.0
-    tth_offset: float = 5.0
-    rho_sub: float = 0.0  # Substrate SLD (Nuisance)
-    sig_sub: float = 0.0  # Substrate roughness (Nuisance)
+    # Dynamic weights handled by dict or list? 
+    # For now, keep it simple, or use a default value for generic parameters.
+    # We will likely move to a dictionary-based weight system in the Trainer.
+    # This class might become obsolete or generic.
+    global_weights: dict[str, float] = Field(
+        default={
+            "L": 5.0, "i0": 1.0, "bkg": 1.0, "beam_width": 10.0,
+            "dq": 1.0, "tth_offset": 5.0
+        }
+    )
+    layer_weights: dict[str, float] = Field(
+        default={"thickness": 1.0, "roughness": 1.0, "sld": 1.0}
+    )
 
-# 6. 학습 프로세스 하이퍼파라미터
 class TrainingConfig(BaseModel):
     batch_size: int = 64
     lr: float = 5e-4
@@ -90,29 +125,27 @@ class TrainingConfig(BaseModel):
     epochs: int = 300
     steps_per_epoch: int = 100
     warmup_steps: int = 1000
-    early_stop_patience: int = 50  # 0 = 비활성화
+    early_stop_patience: int = 50
     
-    # Supervision (Parameter) Loss
     sup_w_start: float = 100.0
     sup_w_end: float = 2000.0
     phys_penalty_w: float = 10.0
     
-    # Loss Component Weights (Reconstruction)
-    # Linear Loss: I0/Critical Angle 집중 (값 범위 0~1)
     w_linear: float = 100.0
-    # Gradient Loss: Fringe 패턴/두께 집중
     w_gradient: float = 50.0
-    # Log Base Loss: 전체적인 경향성
     w_log_base: float = 10.0
     
     weights: WeightConfig = Field(default_factory=WeightConfig)
 
-# 7. 프로젝트 통합 설정 (Root Config)
+# ==============================================================================
+# 3. Root Configuration
+# ==============================================================================
+
 class XRefineConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
 
-    experiment_name: str = 'XRefine_Transformer_v1'
-    save_root: Path = Path(r"C:\Warehouse\data\XRR_AI\PINN")
+    experiment_name: str = 'XRefine_NextGen'
+    save_root: Path = Path("./data")
     log_dir: Path = Path("./logs")
     
     device: torch.device = Field(
@@ -124,12 +157,11 @@ class XRefineConfig(BaseModel):
     q_len: int = 2000
 
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
-    ranges: PhysicalRangeConfig = Field(default_factory=PhysicalRangeConfig)
+    sample: SampleConfig = Field(description="Dynamic Layer Configuration") # REPLACES ranges
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
     train: TrainingConfig = Field(default_factory=TrainingConfig)
     model: ModelArchConfig = Field(default_factory=ModelArchConfig)
 
-    # [FIX] 내부적으로 q_grid 값을 저장할 수 있는 Private 변수 선언
     _q_grid_override: Optional[torch.Tensor] = PrivateAttr(default=None)
 
     @field_validator('device', mode='before')
@@ -142,33 +174,25 @@ class XRefineConfig(BaseModel):
     def serialize_device(self, device: torch.device, _info):
         return str(device)
 
-    # [FIX] Getter: 오버라이드된 값이 있으면 그거 쓰고, 없으면 계산
     @property
     def q_grid(self) -> torch.Tensor:
         if self._q_grid_override is not None:
             return self._q_grid_override
-            
         q_start = tth2q(self.q_min_tth, self.instrument.wavelength)
         q_end = tth2q(self.q_max_tth, self.instrument.wavelength)
         return torch.linspace(q_start, q_end, self.q_len)
 
-    # [FIX] Setter: 외부에서 값을 강제로 주입할 수 있도록 허용
     @q_grid.setter
     def q_grid(self, value: torch.Tensor):
         self._q_grid_override = value
 
-    def get_weight_set(self, device: torch.device = None) -> ParamSet:
-        if device is None: device = self.device
-        w = self.train.weights
-        return ParamSet(
-            **{k: torch.tensor(v, device=device) for k, v in w.model_dump().items()}
-        )
-
     def save_yaml(self, path: str | Path):
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use Pydantic's mode='json' to handle Path/Device serialization automatically
+        data = self.model_dump(mode='json')
         with open(save_path, 'w', encoding='utf-8') as f:
-            yaml.dump(self.model_dump(mode='json'), f, sort_keys=False)
+            yaml.dump(data, f, sort_keys=False)
 
     @classmethod
     def load_yaml(cls, path: str | Path) -> Self:
@@ -176,4 +200,13 @@ class XRefineConfig(BaseModel):
             data = yaml.safe_load(f)
         return cls(**data)
 
-CONFIG = XRefineConfig()
+# Dummy/Default Config for initialization
+# We need to define a sensible default SampleConfig
+DEFAULT_SAMPLE = SampleConfig(
+    substrate=SubstrateConfig(roughness=[0.5, 5.0], sld=[19.0, 21.0]),
+    layers=[
+        LayerConfig(name="Film", thickness=[100.0, 500.0], roughness=[1.0, 5.0], sld=[20.0, 60.0])
+    ]
+)
+
+CONFIG = XRefineConfig(sample=DEFAULT_SAMPLE)
