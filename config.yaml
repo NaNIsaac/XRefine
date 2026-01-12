@@ -43,7 +43,7 @@ ranges:
 
 # [Augmentation Config]
 augmentations:
-  intensity_noise_scale: 0.2
+  intensity_noise_scale: 0.05
   bg_range: [-9.0, -5.0]
   res_sigma_range: [0.0001, 0.005]
   q_shift_sigma: 0.001
@@ -61,13 +61,13 @@ train:
   
   # Curriculum & Physics Loss
   sup_w_start: 1000.0
-  sup_w_end: 1
+  sup_w_end: 100.0     # 1 → 100 (Supervision 유지)
   phys_penalty_w: 0.8579
 
   # Loss Component Weights (Reconstruction)
-  w_linear: 100.0    # I0/Critical Angle 집중
-  w_gradient: 100.0   # Fringe 패턴/두께 집중
-  w_log_base: 10.0   # 전체적인 경향성
+  w_linear: 10.0       # 100 → 10 (Linear 영향력 감소)
+  w_gradient: 50.0     # Fringe 패턴/두께 집중
+  w_log_base: 50.0     # 10 → 50 (Log 기반 손실 강화)
 
   # Parameter-specific Weights
 weights:
