@@ -84,30 +84,55 @@ weights:
   L: 0.0
   beam_width: 0.0
 
+# =============================================================================
 # [Model Architecture]
+# =============================================================================
 model:
-  # --- Core Setting ---
-  model_type: "vit"  # Options: "vit", "transformer", or "cnn"
+  # ┌──────────────────────────────────────────────────────────────────────────┐
+  # │ model_type: 사용할 모델 종류                                               │
+  # │  - "vit"        : Vision Transformer (패치 + Fourier, 권장)               │
+  # │  - "transformer": Transformer-VAE (Fourier만)                             │
+  # │  - "cnn"        : Fourier-CNN (레거시)                                    │
+  # └──────────────────────────────────────────────────────────────────────────┘
+  model_type: "vit"
   
-  # --- Common ---
-  hidden_dim: 256       # d_model (128 -> 256)
-  encoder_depth: 6      # Layers (4 -> 6)
-  n_layers: 1           # Number of film layers
+  # ───────────────────────────────────────────────────────────────────────────
+  # 공통 설정 (모든 모델)
+  # ───────────────────────────────────────────────────────────────────────────
+  hidden_dim: 256       # 임베딩/채널 차원
+  encoder_depth: 6      # Transformer/CNN 레이어 수
+  n_layers: 1           # 예측할 박막 층 수
+  dropout: 0.15         # 드롭아웃 비율
   
-  # --- ViT/Transformer Shared ---
-  n_heads: 8            # Attention Heads (4 -> 8)
-  dim_feedforward: 1024 # FFN expansion (512 -> 1024)
-  dropout: 0.15         # (0.1 -> 0.15)
-  activation: "gelu"
+  # ───────────────────────────────────────────────────────────────────────────
+  # Fourier Feature 설정 (ViT, Transformer 공통)
+  # ───────────────────────────────────────────────────────────────────────────
+  # mapping_size: Fourier 차원 수 (0 = Fourier 비활성화)
+  #   - 높을수록 표현력 증가, 계산량 증가
+  #   - 권장: 64~128
+  mapping_size: 96
   
-  # --- ViT Specific ---
-  patch_size: 16        # Each patch = 16 Q-points
+  # fourier_scale: 랜덤 주파수의 스케일
+  #   - 높을수록 고주파(미세 Fringe) 포착
+  #   - 낮을수록 저주파(부드러운 곡선) 포착
+  #   - 권장: 30~60
+  fourier_scale: 50.0
   
-  # --- Transformer Specific (Fourier Features) ---
-  fourier_scale: 50.0   # (43 -> 50)
-  mapping_size: 96      # (64 -> 96)
+  # ───────────────────────────────────────────────────────────────────────────
+  # Transformer/ViT 공통 설정
+  # ───────────────────────────────────────────────────────────────────────────
+  n_heads: 8            # Attention Head 수 (hidden_dim / n_heads = head_dim)
+  dim_feedforward: 1024 # FFN 확장 차원 (보통 hidden_dim * 4)
+  activation: "gelu"    # 활성화 함수 (gelu, relu)
   
-  # --- CNN Specific (Legacy Support) ---
+  # ───────────────────────────────────────────────────────────────────────────
+  # ViT 전용 설정
+  # ───────────────────────────────────────────────────────────────────────────
+  patch_size: 16        # 패치 크기 (16 Q-포인트를 하나의 토큰으로)
+  
+  # ───────────────────────────────────────────────────────────────────────────
+  # CNN 전용 설정 (레거시)
+  # ───────────────────────────────────────────────────────────────────────────
   kernel_size: 21
   dilation: 2
   n_channels: 128

@@ -4,12 +4,17 @@ Vision Transformer (ViT) Physics-Informed Neural Network
 XRR 데이터를 패치 기반으로 처리하는 ViT 아키텍처.
 
 구조:
-1. Input (Log R) -> Patch Embedding (Conv1d)
+1. Input (Log R) -> [Optional] Fourier Feature -> Patch Embedding
 2. [CLS] Token + Positional Encoding
 3. Transformer Encoder (Self-Attention)
 4. [CLS] Token -> Prediction Head
 5. Physics Decoder (Abeles Matrix)
+
+Fourier Feature 옵션:
+- mapping_size > 0: Fourier Feature 활성화 (고주파 패턴 포착 향상)
+- mapping_size = 0: Fourier 비활성화 (원본 ViT 동작)
 """
+import math
 import torch
 import torch.nn as nn
 from dataclasses import fields
@@ -17,6 +22,28 @@ from dataclasses import fields
 from xrefine.core.structures import ParamSet
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.config import XRefineConfig
+
+
+class FourierFeatureExtractor(nn.Module):
+    """
+    Random Fourier Feature Mapping (NeRF-style)
+    고주파 패턴(Fringe 간섭)을 신경망이 더 잘 학습하도록 위치 인코딩.
+    
+    Input: (B, 1, L) - normalized log reflectivity
+    Output: (B, 2*mapping_size, L) - sin/cos encoded features
+    """
+    def __init__(self, mapping_size: int = 64, scale: float = 40.0):
+        super().__init__()
+        self.mapping_size = mapping_size
+        # Random Fourier basis (frozen, not learnable)
+        B_matrix = torch.randn(1, mapping_size) * scale
+        self.register_buffer('B', B_matrix)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (Batch, 1, L)
+        B_expanded = self.B.unsqueeze(-1)  # (1, mapping_size, 1)
+        projected = 2 * math.pi * x * B_expanded  # (B, mapping_size, L)
+        return torch.cat([torch.sin(projected), torch.cos(projected)], dim=1)  # (B, 2*mapping_size, L)
 
 
 class PatchEmbed1D(nn.Module):
@@ -36,7 +63,7 @@ class PatchEmbed1D(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (Batch, 1, Seq_Len)
+        # x: (Batch, in_chans, Seq_Len)
         x = self.proj(x)  # -> (Batch, Embed_Dim, Num_Patches)
         x = x.transpose(1, 2)  # -> (Batch, Num_Patches, Embed_Dim)
         x = self.norm(x)
@@ -49,6 +76,10 @@ class XRR_ViT_PINN(nn.Module):
     
     ViT treats the 1D XRR curve as a sequence of patches, similar to how
     image ViT treats an image as a sequence of patch embeddings.
+    
+    Fourier Feature:
+    - mapping_size > 0: Enable Fourier (better high-freq pattern capture)
+    - mapping_size = 0: Disable Fourier (original ViT behavior)
     """
     def __init__(self, config: XRefineConfig):
         super().__init__()
@@ -59,11 +90,25 @@ class XRR_ViT_PINN(nn.Module):
         depth = config.model.encoder_depth
         num_heads = config.model.n_heads
         patch_size = getattr(config.model, 'patch_size', 16)
+        mapping_size = getattr(config.model, 'mapping_size', 0)
+        fourier_scale = getattr(config.model, 'fourier_scale', 40.0)
         input_len = config.q_len
         
-        # --- 1. Patch Embedding (Eyes) ---
+        # --- 0. Optional Fourier Feature ---
+        self.use_fourier = mapping_size > 0
+        if self.use_fourier:
+            self.fourier = FourierFeatureExtractor(
+                mapping_size=mapping_size, 
+                scale=fourier_scale
+            )
+            in_chans = 2 * mapping_size  # sin + cos
+        else:
+            self.fourier = None
+            in_chans = 1
+        
+        # --- 1. Patch Embedding ---
         self.patch_embed = PatchEmbed1D(
-            in_chans=1, 
+            in_chans=in_chans, 
             embed_dim=embed_dim, 
             patch_size=patch_size
         )
@@ -169,7 +214,11 @@ class XRR_ViT_PINN(nn.Module):
         # 1. Input Normalization (-15 ~ 0 -> roughly -1 ~ 1)
         x = (torch.clamp(x, min=-15.0, max=0.0) + 7.5) / 7.5
 
-        # 2. Patch Embedding
+        # 2. Optional Fourier Feature Mapping
+        if self.use_fourier:
+            x = self.fourier(x)  # (B, 1, L) -> (B, 2*mapping_size, L)
+
+        # 3. Patch Embedding
         x = self.patch_embed(x)  # (B, N_Patches, Embed_Dim)
         B = x.shape[0]
 
