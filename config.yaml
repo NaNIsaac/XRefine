@@ -60,7 +60,7 @@ train:
   warmup_steps: 1000
   
   # Curriculum & Physics Loss
-  sup_w_start: 1000.0
+  sup_w_start: 10000.0
   sup_w_end: 100.0     # 1 → 100 (Supervision 유지)
   phys_penalty_w: 0.8579
 
