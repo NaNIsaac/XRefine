@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 from dataclasses import fields
 from tqdm import tqdm
 
-from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN
+from xrefine.models import XRR_Fourier_PINN, XRR_Transformer_PINN, XRR_ViT_PINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.config import XRefineConfig
@@ -55,10 +55,12 @@ class XRREvaluator:
         # 체크포인트의 q_grid를 재생성하여 device에 올림
         self.config.q_grid = self.config.q_grid.to(self.device)
 
-        # 3. 모델 로드
+        # 3. 모델 로드 (model_type에 따라 선택)
         model_type = getattr(self.config.model, 'model_type', 'cnn').lower()
         
-        if model_type == 'transformer':
+        if model_type == 'vit':
+            self.model = XRR_ViT_PINN(config=self.config).to(self.device)
+        elif model_type == 'transformer':
             self.model = XRR_Transformer_PINN(config=self.config).to(self.device)
         else:
             self.model = XRR_Fourier_PINN(config=self.config, device=self.device).to(self.device)
