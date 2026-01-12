@@ -347,16 +347,25 @@ class XRefineTrainer:
             logger.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
             return
 
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt['model_state_dict'])
-        self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        if 'scheduler_state_dict' in ckpt:
-            self.scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-        
-        self.start_epoch = ckpt['epoch'] + 1
-        self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
-        self.history = ckpt.get('history', self.history)
-        logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")
+        try:
+            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            self.model.load_state_dict(ckpt['model_state_dict'])
+            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            if 'scheduler_state_dict' in ckpt:
+                self.scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            
+            self.start_epoch = ckpt['epoch'] + 1
+            self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
+            self.history = ckpt.get('history', self.history)
+            logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")
+        except RuntimeError as e:
+            logger.warning(f"⚠️ Checkpoint structure mismatch (Legacy?): {e}")
+            logger.warning("Starting fresh training session ignoring incompatible checkpoint.")
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load checkpoint: {e}")
+            logger.warning("Starting fresh training session.")
+            return
 
     def backup_to_drive(self, force: bool = False):
         """[COLAB] 로컬 체크포인트를 Drive로 백업"""
