@@ -297,7 +297,20 @@ class XRefineTrainer:
 
     def load_checkpoint(self, path: Optional[Path] = None):
         checkpoint_path = path or (self.save_dir / "last.pt")
+        
+        # [COLAB FIX] 로컬에 없으면 Drive에서 복원
+        if IN_COLAB and not checkpoint_path.exists():
+            drive_ckpt = self.drive_save_dir / "last.pt"
+            if drive_ckpt.exists():
+                logger.info(f"📥 Restoring checkpoint from Drive: {drive_ckpt}")
+                shutil.copy2(drive_ckpt, checkpoint_path)
+                # best.pt도 복원
+                drive_best = self.drive_save_dir / "best.pt"
+                if drive_best.exists():
+                    shutil.copy2(drive_best, self.save_dir / "best.pt")
+        
         if not checkpoint_path.exists():
+            logger.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
             return
 
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
