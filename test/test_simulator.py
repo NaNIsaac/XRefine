@@ -1,10 +1,9 @@
 import torch
 
 from xrefine.core.interface import Simulator
-from xrefine.logger import logger
 
 def test_forward_pass():
-    logger.info("Testing Forward Pass...")
+    print("Testing Forward Pass...")
     sim = Simulator(method='abeles', device='cpu')
     
     batch_size = 2
@@ -23,11 +22,11 @@ def test_forward_pass():
     
     assert r.shape == q.shape
     assert torch.all(r >= 0) and torch.all(r <= 1.0)
-    logger.info("Forward Pass: OK")
+    print("Forward Pass: OK")
     return q, r
 
 def test_gradients():
-    logger.info("\nTesting Gradients (PINN capability)...")
+    print("\nTesting Gradients (PINN capability)...")
     sim = Simulator(method='abeles', device='cpu')
     
     thickness = torch.tensor([[100.0]], requires_grad=True)
@@ -39,9 +38,9 @@ def test_gradients():
     loss = r.sum()
     loss.backward()
     
-    logger.info(f"Thickness Grad:\n{thickness.grad}")
-    logger.info(f"Roughness Grad:\n{roughness.grad}")
-    logger.info(f"SLD Grad:\n{sld.grad}")
+    print(f"Thickness Grad:\n{thickness.grad}")
+    print(f"Roughness Grad:\n{roughness.grad}")
+    print(f"SLD Grad:\n{sld.grad}")
     
     # Check gradients are not None and not zero (unless physically so)
     assert thickness.grad is not None
@@ -51,10 +50,10 @@ def test_gradients():
     # Check physics: thicker layer usually changes oscillation frequency, so grad should be non-zero
     assert torch.abs(thickness.grad).sum() > 0
     
-    logger.info("Gradients: OK")
+    print("Gradients: OK")
 
 def test_smearing():
-    logger.info("\nTesting Smearing...")
+    print("\nTesting Smearing...")
     sim = Simulator(method='abeles', device='cpu')
     
     dq = torch.tensor([[0.01]]) # constant resolution
@@ -67,10 +66,10 @@ def test_smearing():
     r_smeared = sim(q, thickness, roughness, sld, dq=dq)
     
     assert r_smeared.shape == q.shape
-    logger.info("Smearing: OK")
+    print("Smearing: OK")
 
 def test_kinematical():
-    logger.info("\nTesting Kinematical...")
+    print("\nTesting Kinematical...")
     sim = Simulator(method='kinematical', device='cpu')
     
     q = torch.linspace(0.01, 0.5, 100).unsqueeze(0)
@@ -80,7 +79,7 @@ def test_kinematical():
     
     r = sim(q, thickness, roughness, sld)
     assert r.shape == q.shape
-    logger.info("Kinematical: OK")
+    print("Kinematical: OK")
 
 if __name__ == "__main__":
     try:
@@ -88,8 +87,8 @@ if __name__ == "__main__":
         test_gradients()
         test_smearing()
         test_kinematical()
-        logger.info("\nALL TESTS PASSED!")
+        print("\nALL TESTS PASSED!")
     except Exception as e:
-        logger.info(f"\nTEST FAILED: {e}")
+        print(f"\nTEST FAILED: {e}")
         import traceback
         traceback.print_exc()

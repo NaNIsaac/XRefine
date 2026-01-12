@@ -115,7 +115,7 @@ model:
   # mapping_size: Fourier 차원 수 (0 = Fourier 비활성화)
   #   - 높을수록 표현력 증가, 계산량 증가
   #   - 권장: 64~128
-  mapping_size: 96
+  mapping_size: 0
   
   # fourier_scale: 랜덤 주파수의 스케일
   #   - 높을수록 고주파(미세 Fringe) 포착

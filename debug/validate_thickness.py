@@ -9,7 +9,6 @@ from xrefine.config import XRefineConfig
 from xrefine.models import XRR_Fourier_PINN
 from xrefine.core.structures import ParamSet
 from xrefine.predict_real import load_real_data, _optimize_subset
-from xrefine.logger import logger
 
 class ThicknessValidator:
     def __init__(self, checkpoint_path: str, data_path: str):

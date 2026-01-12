@@ -18,6 +18,7 @@ from torch import Tensor
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.core.structures import ParamSet
 from xrefine.config import XRefineConfig
+from xrefine.core.smearing import abeles_constant_smearing
 
 
 # ==============================================================================
@@ -211,16 +212,42 @@ class BasePINNModel(nn.Module, ABC):
         if hasattr(params, 'tth_offset') and params.tth_offset is not None:
             q_batch = q_batch + params.tth_offset * 0.01
         
-        # 물리 시뮬레이션 (순수 반사율)
-        r_sim = self.simulator(
-            q=q_batch,
-            thickness=thickness,
-            roughness=roughness,
-            sld=sld_full,
-            sample_length=params.L,
-            beam_width=params.beam_width,
-            wavelength=self.config.instrument.wavelength
-        )
+        # [FIX] Resolution Smearing (Instrumental Broadening)
+        # 실제 데이터는 기기 해상도(dq)에 의해 스미어링되어 있음.
+        # 이를 시뮬레이션에 반영하지 않으면 Roughness를 과대평가하게 됨.
+        if hasattr(params, 'dq') and params.dq is not None:
+            # dq가 너무 작으면(1e-5 이하) 스미어링 생략 (계산 효율성)
+            if params.dq.mean() > 1e-5:
+                r_sim = abeles_constant_smearing(
+                    q=q_batch,
+                    thickness=thickness,
+                    roughness=roughness,
+                    sld=sld_full,
+                    sample_length=params.L,
+                    beam_width=params.beam_width,
+                    dq=params.dq,
+                    abeles_func=self.simulator  # Re-use initialized module
+                )
+            else:
+                r_sim = self.simulator(
+                    q=q_batch,
+                    thickness=thickness,
+                    roughness=roughness,
+                    sld=sld_full,
+                    sample_length=params.L,
+                    beam_width=params.beam_width,
+                    wavelength=self.config.instrument.wavelength
+                )
+        else:
+            r_sim = self.simulator(
+                q=q_batch,
+                thickness=thickness,
+                roughness=roughness,
+                sld=sld_full,
+                sample_length=params.L,
+                beam_width=params.beam_width,
+                wavelength=self.config.instrument.wavelength
+            )
         
         # [FIX] i0, bkg applied here to match data generation
         r_final = (params.i0 * r_sim) + torch.pow(10.0, params.bkg)
@@ -286,15 +313,18 @@ class PatchEmbed1D(nn.Module):
         self, 
         in_channels: int = 1, 
         embed_dim: int = 128, 
-        patch_size: int = 16
+        patch_size: int = 16,
+        stride: int | None = None
     ):
         super().__init__()
         self.patch_size = patch_size
+        self.stride = stride if stride is not None else patch_size
+        
         self.proj = nn.Conv1d(
             in_channels, 
             embed_dim, 
             kernel_size=patch_size, 
-            stride=patch_size  # Non-overlapping patches
+            stride=self.stride
         )
         self.norm = nn.LayerNorm(embed_dim)
 

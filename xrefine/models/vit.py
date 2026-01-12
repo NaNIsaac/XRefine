@@ -50,13 +50,20 @@ class ViTEncoder(nn.Module):
             self.fourier = None
             in_channels = 1
         
+        # [FIX] Overlapping Patch for Fringe Preservation
+        # Stride=4 creates 75% overlap with Patch=16
+        self.stride = patch_size // 4  
+        
         # 2. Patch Embedding
         self.patch_embed = PatchEmbed1D(
             in_channels=in_channels,
             embed_dim=embed_dim,
-            patch_size=patch_size
+            patch_size=patch_size,
+            stride=self.stride
         )
-        num_patches = input_len // patch_size
+        
+        # Correct formula for Conv1d output size
+        num_patches = (input_len - patch_size) // self.stride + 1
         
         # 3. Learnable Tokens
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
