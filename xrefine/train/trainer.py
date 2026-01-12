@@ -7,7 +7,6 @@ import os
 import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.auto import tqdm  # [FIX] Colab 호환 tqdm
 
 from xrefine.config import XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
@@ -28,8 +27,13 @@ def is_colab() -> bool:
         return False
 
 IN_COLAB = is_colab()
+
+# [FIX] Colab에서는 notebook tqdm 사용 (그래픽 바 표시)
 if IN_COLAB:
+    from tqdm.notebook import tqdm
     from IPython.display import clear_output
+else:
+    from tqdm.auto import tqdm
 
 class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
