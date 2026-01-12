@@ -22,6 +22,7 @@ class AugmentationConfig(BaseModel):
     res_sigma_range: Tuple[float, float] = (0.0001, 0.005)
     q_shift_sigma: float = 0.001
     beam_profile: Literal['gaussian', 'square'] = 'gaussian'
+    measure_step_range: Tuple[float, float] = (0.001, 0.1) # Variable Step Size (Degrees 2theta)
 
 # 3. 모델 아키텍처 설정
 class ModelArchConfig(BaseModel):

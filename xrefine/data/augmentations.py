@@ -46,17 +46,55 @@ class XRRAugmentor(nn.Module):
         
         return smeared.view(B, Q)
 
+    def apply_resampling(self, R: torch.Tensor) -> torch.Tensor:
+        """
+        [Resampling Augmentation]
+        Angular Resolution (Step Size) 기반으로 측정 포인트 수를 가변적으로 시뮬레이션.
+        """
+        B, Q = R.shape
+        # Config에서 각도 범위(2theta) 가져오기
+        tth_max = self.cfg.q_max_tth
+        tth_min = self.cfg.q_min_tth
+        total_angle = tth_max - tth_min
+        
+        step_min, step_max = self.aug_cfg.measure_step_range
+        
+        # Random Step Size Sampling (Uniform Distribution)
+        # step_size ~ U(min, max)
+        step_size = (torch.rand(1, device=R.device) * (step_max - step_min)) + step_min
+        
+        # Calculate target number of points
+        # N = Total Angle / Step Size
+        target_len_float = total_angle / step_size
+        target_len = int(target_len_float.item())
+        
+        # Safety Check (최소 10포인트 이상)
+        target_len = max(target_len, 10)
+        
+        # 1. Downsample (Simulation of coarse measurement)
+        # interpolate expects (B, C, L)
+        R_in = R.unsqueeze(1) 
+        R_coarse = F.interpolate(R_in, size=target_len, mode='linear', align_corners=True)
+        
+        # 2. Upsample (Back to model grid)
+        R_recon = F.interpolate(R_coarse, size=Q, mode='linear', align_corners=True)
+        
+        return R_recon.squeeze(1)
+
     @torch.no_grad()
     def forward(self, q: torch.Tensor, R: torch.Tensor, params: ParamSet) -> torch.Tensor:
-        """[Pipeline] Smearing -> Scaling -> Noise -> Masking"""
+        """[Pipeline] Sampling -> Smearing -> Scaling -> Noise -> Masking"""
         B, Q = R.shape
         device = R.device
         
         # 0. NaN 방어
         R = torch.nan_to_num(R, nan=1e-11, posinf=1.0, neginf=1e-11)
 
-        # 1. Resolution Smearing (Disabled - Handled by Simulator)
-        R_aug = R
+        # 1. Variable Density Resampling (New!)
+        # 실제 측정 포인트 수의 다양성을 모사 (Coarse Sampling -> Linear Interpolation)
+        R_aug = self.apply_resampling(R)
+        
+        # 2. Q-Shift
         
         # 2. Q-Shift
         if self.aug_cfg.q_shift_sigma > 0:

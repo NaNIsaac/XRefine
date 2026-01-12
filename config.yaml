@@ -2,15 +2,16 @@
 # ==========================
 
 # [General Settings]
-experiment_name: "v1"
-save_root: "C:\\Warehouse\\data\\XRR_AI\\transformer"
+experiment_name: "v2"
+# save_root: "C:\\Warehouse\\data\\XRR_AI\\transformer"
+save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
 
 # [Measurement Specs]
 q_min_tth: 0.05
-q_max_tth: 12.0
-q_len: 2000
+q_max_tth: 15.0
+q_len: 15000
 
 # [Instrument Hardware]
 instrument:
@@ -47,6 +48,7 @@ augmentations:
   res_sigma_range: [0.0001, 0.005]
   q_shift_sigma: 0.001
   beam_profile: "gaussian"
+  measure_step_range: [0.001, 0.1]
 
 # [Training Hyperparameters]
 train:
@@ -68,7 +70,6 @@ weights:
   # [Tier 0] 절대 존엄 (Alignment & Scaling)
   # ==========================================
   # 축이 틀어지면 모든 물리 법칙이 깨집니다. 가장 강력하게 보정합니다.
-  tth_offset: 10.0  # X축 정렬 (Shift). 이게 틀리면 두께 예측 불가.
   i0: 5.0           # Y축 스케일 (Intensity). 전체 형상 결정.
 
   # ==========================================
@@ -87,6 +88,7 @@ weights:
   rho_ox: 1.5       # 박막이 얇으면 밀도 구분이 매우 모호함
   sig_ox: 1.0       # 가장 맞추기 힘든 변수. 너무 높이면 노이즈를 피팅함
   bkg: 1.0          # 배경 노이즈 레벨 (로그 스케일이라 1.0이면 충분)
+  tth_offset: 1
 
   # ==========================================
   # [Tier 3] Nuisance Parameters (Ignore)

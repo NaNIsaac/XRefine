@@ -26,7 +26,8 @@ def get_model(config: XRefineConfig):
 def merge_unknown_args(config_dict: Dict[str, Any], unknown: List[str]) -> Dict[str, Any]:
     """CLI 인자를 계층적 dict로 변환 (config. 접두사 자동 처리)"""
     for i in range(0, len(unknown), 2):
-        if not unknown[i].startswith('--'): continue
+        if not unknown[i].startswith('--'):
+            continue
         
         key = unknown[i].lstrip('-')
         value_str = unknown[i+1]
