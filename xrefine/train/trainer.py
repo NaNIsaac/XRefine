@@ -100,53 +100,58 @@ class XRefineTrainer:
 
     def train_epoch(self, epoch: int, curr_sup_w: float):
         self.model.train()
-        total_loss = 0.0  # [FIX] 변수명 통일 (기존 total_loss_avg -> total_loss)
+        total_loss = 0.0
+        # 모니터링용 누적 변수 추가
+        total_param_loss = 0.0 
+        
         steps = self.cfg.train.steps_per_epoch
         pbar = tqdm(
             range(steps), 
             desc=f"Epoch {epoch:03d}", 
             leave=False,
-            total=steps,         # 명시적 total
-            ncols=100,           # 바 너비 고정
-            ascii=" >=",         # ASCII 바 문자 (호환성)
-            mininterval=1.0      # [Performance] 1초에 최대 1번만 갱신 (브라우저 프리징 방지)
+            total=steps,
+            ncols=100,
+            ascii=" >=",
+            mininterval=1.0
         )
-        
+
         for step in pbar:
             # 1. 데이터 생성
             r_meas, p_true = generate_synthetic_batch(
                 q_grid=self.cfg.q_grid,
                 batch_size=self.cfg.train.batch_size,
                 config=self.cfg,
-                simulator=self.simulator,  # Cached
+                simulator=self.simulator,
                 augmenter=self.augmenter
             )
             r_meas = r_meas.to(self.device)
             p_true = p_true.to(self.device)
-            
+
             log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             self.optimizer.zero_grad(set_to_none=True)
-            
+
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
-                # 2. Forward Pass (Learnable Mode: Fixed Params 주입)
-                p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=p_true)
-                
+                # 2. Forward Pass (FIXED)
+                # [중요] 학습 시에는 fixed_values=None으로 설정하여 신경망이 직접 예측하게 함
+                # p_true를 넣으면 정답을 베끼게 되어 학습이 안 됨 (Loss=0)
+                p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=None)
+
                 # 3. VAE KL Loss Calculation
                 kl_loss = torch.tensor(0.0, device=self.device)
                 if isinstance(aux_output, tuple):
                     mu, logvar, phys_penalty = aux_output
-                    # KL Divergence
                     kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
                     kl_loss = torch.mean(kl_div) * 0.001
                 else:
                     phys_penalty = aux_output
 
-                # 4. Criterion Calling
-                loss_main, _, _, _, _ = self.criterion(
+                # 4. Criterion Calling (FIXED)
+                # [중요] loss_param을 언패킹하여 모니터링에 사용
+                loss_main, _, _, _, loss_param = self.criterion(
                     p_pred, r_recon, log_r_obs, p_true, 
                     self.cfg, curr_sup_w, phys_penalty
                 )
-                
+
                 loss = loss_main + kl_loss
 
             if not torch.isfinite(loss):
@@ -157,10 +162,10 @@ class XRefineTrainer:
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 
+                # OneCycleLR Scale safe-guard
                 current_scale = self.scaler.get_scale()
                 skip_lr_sched = (current_scale > self.scaler.get_scale())
                 if not skip_lr_sched:
@@ -171,16 +176,17 @@ class XRefineTrainer:
                 self.optimizer.step()
                 self.scheduler.step()
 
-            # [FIX] 정의된 변수에 누적
             total_loss += loss.item()
-            
+            total_param_loss += loss_param.item() # 누적
+
             if step % 10 == 0:
                 pbar.set_postfix({
                     "L": f"{loss.item():.4f}", 
+                    "P_L": f"{loss_param.item():.4f}", # Param Loss 표시
                     "KL": f"{kl_loss.item():.4f}",
                     "LR": f"{self.scheduler.get_last_lr()[0]:.2e}"
                 })
-                
+
         return total_loss / steps
 
     @torch.no_grad()
@@ -196,12 +202,11 @@ class XRefineTrainer:
         )
         r_meas = r_meas.to(self.device)
         p_true = p_true.to(self.device)
-        
+
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
-        
-        # [FIX] Fixed Params 주입
-        p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=p_true)
-        
+
+        p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=None)
+
         kl_loss = 0.0
         if isinstance(aux_output, tuple):
             mu, logvar, phys_penalty = aux_output

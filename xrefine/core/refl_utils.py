@@ -186,12 +186,12 @@ def _get_gauss(z, z0, sigma, amp):
     return amp / ((sigma + 1e-8) * sqrt(2 * pi)) * torch.exp(-((z - z0) ** 2) / 2 / (sigma + 1e-8)**2)
 
 
-def angle_to_q(scattering_angle: ndarray or float, wavelength: float):
+def angle_to_q(scattering_angle: ndarray | float, wavelength: float):
     """Conversion from full scattering angle (degrees) to scattering vector (inverse angstroms)"""
     return 4 * np.pi / wavelength * np.sin(scattering_angle / 2 * np.pi / 180)
 
 
-def q_to_angle(q: ndarray or float, wavelength: float):
+def q_to_angle(q: ndarray | float, wavelength: float):
     """Conversion from scattering vector (inverse angstroms) to full scattering angle (degrees)"""
     return 2 * np.arcsin(q * wavelength / (4 * np.pi)) / np.pi * 180
 

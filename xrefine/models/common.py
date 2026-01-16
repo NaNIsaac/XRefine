@@ -125,29 +125,41 @@ class BasePINNModel(nn.Module, ABC):
         """
         Convert NN output (0~1) to physical ranges.
         Constructs a DynamicParamSet.
+
+        [Feature] Constraint Learning:
+        If 'fixed_values' is provided, parameters present in it will OVERWRITE 
+        the network predictions. This cuts the gradient for those parameters, 
+        treating them as constants (Ground Truth).
         """
         batch_size = raw_output.size(0)
-        
+
         # Split output into chunks of 1 (since all scalars)
-        # If we had vector params, we'd need varying split sizes.
-        # Currently all params are scalars (size 1) in the map.
         vals = torch.split(raw_output, 1, dim=1)
-        
+
         params_dict = {}
-        
-        # Iterate over mapping and values
+
+        # 1. Base: Convert Network Predictions to Physical Values
         for (key, (p_min, p_max)), val in zip(self.param_map, vals):
-            # val: (B, 1)
+            # val: (B, 1) Normalized 0~1
             physical_val = val * (p_max - p_min) + p_min
             params_dict[key] = physical_val
-            
-        # TODO: Handle fixed_values overriding (omitted for cleaner refactor for now)
-        # If fixed_values is provided, we should selectively overwrite or not predict specific params.
-        # For now, we assume FULL PREDICTION.
+
+        # 2. Override: Apply Fixed Value Constraints
+        if fixed_values is not None:
+            # DynamicParamSet 내부 딕셔너리 순회
+            for key, target_val in fixed_values._params.items():
+                if key in params_dict:
+                    # 배치 사이즈 브로드캐스팅 (1 -> B)
+                    if target_val.size(0) == 1 and batch_size > 1:
+                        target_val = target_val.expand(batch_size, -1)
+
+                    # [Core Logic] 예측값 덮어쓰기
+                    # 이 시점에서 해당 파라미터는 신경망의 Computational Graph에서 분리됩니다.
+                    params_dict[key] = target_val
 
         # Order of layer names for assembly
         layer_names = [l.name for l in self.config.sample.layers]
-        
+
         return ParamSet(params_dict, layer_names, device=self.device)
 
     def validate_physics(self, params: ParamSet) -> Tensor:
