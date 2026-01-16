@@ -39,29 +39,6 @@ def log_epoch(msg: str):
     tqdm.write(msg)
 
 
-def optimize_modules(simulator, model):
-    """
-    [Speed Boost] Kernel Fusion for Physics & AI
-    작은 연산들을 하나로 합쳐 CPU 오버헤드를 제거합니다.
-    Windows에서는 'inductor' 백엔드가 불안정할 수 있어 예외처리합니다.
-    """
-    print("🚀 Compiling Physics & Model with torch.compile...")
-    
-    try:
-        # 1. 물리 엔진 컴파일 (가장 효과 큼)
-        # mode='reduce-overhead': CUDA Graph를 사용하여 실행 속도 극대화
-        simulator = torch.compile(simulator, mode="reduce-overhead")
-        
-        # 2. 모델 컴파일
-        model = torch.compile(model, mode="reduce-overhead")
-        print("✅ Torch Compile Successful! (Mode: reduce-overhead)")
-        
-    except Exception as e:
-        print(f"⚠️ Compile failed (Windows/GPU compatibility issue): {e}")
-        print("🔄 Fallback to Eager Mode (Standard Execution)")
-        
-    return simulator, model
-
 class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
         self.cfg = config
@@ -75,9 +52,6 @@ class XRefineTrainer:
         self.criterion = XRRWeightedLoss(self.q_grid).to(self.device)
         self.augmenter = XRRAugmentor(config).to(self.device)
         self.simulator = AbelesMatrix(device=self.device)  # Cached Simulator
-
-        if config.device.type == 'cuda':
-            self.simulator, self.model = optimize_modules(self.simulator, self.model)
 
         # 최적화 설정
         self.optimizer = optim.AdamW(
