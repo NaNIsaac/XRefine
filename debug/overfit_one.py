@@ -2,7 +2,7 @@ import torch
 
 from tqdm import tqdm
 from xrefine.config import CONFIG
-from xrefine.models.fourier_model import XRR_Fourier_PINN
+from xrefine.models.fourier_model import FourierConvPINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.train_utils import compute_loss, save_pinn_report
 
@@ -12,7 +12,7 @@ def test_overfit(steps=1500):
     config = CONFIG.model_copy()
     torch.autograd.set_detect_anomaly(True)
     # Initialize Model & Optimizer
-    model = XRR_Fourier_PINN(config, device=device).to(device)
+    model = FourierConvPINN(config, device=device).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     
     q_grid = config.q_grid.to(device)

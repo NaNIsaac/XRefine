@@ -7,7 +7,7 @@ from pathlib import Path
 
 from xrefine.config import XRefineConfig
 from xrefine.train import XRefineTrainer
-from xrefine.models.fourier_model import XRR_Fourier_PINN
+from xrefine.models.fourier_model import FourierConvPINN
 from xrefine.logger import logger
 
 import optuna.logging
@@ -59,7 +59,7 @@ def objective(trial: optuna.Trial):
     base_cfg.train.epochs = 15  # 에폭 약간 증가
     
     # 모델 및 트레이너 초기화
-    model = XRR_Fourier_PINN(base_cfg)
+    model = FourierConvPINN(base_cfg)
     model.to(base_cfg.device)
     
     trainer = XRefineTrainer(model, config=base_cfg)

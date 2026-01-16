@@ -23,7 +23,7 @@ from xrefine.models.common import (
 )
 
 
-class ViTEncoder(nn.Module):
+class FourierViTPINN(nn.Module):
     """Vision Transformer Encoder for 1D XRR signals"""
     
     def __init__(self, config: XRefineConfig, output_dim: int):
@@ -153,7 +153,7 @@ class XRR_ViT_PINN(BasePINNModel):
     """
     def __init__(self, config: XRefineConfig):
         super().__init__(config)
-        self.encoder_net = ViTEncoder(config, self.output_dim)
+        self.encoder_net = FourierViTPINN(config, self.output_dim)
 
     def encode(self, x: Tensor) -> Tensor:
         """ViT Encoder로 파라미터 추출"""

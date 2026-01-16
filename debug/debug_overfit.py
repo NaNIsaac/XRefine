@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 
 from xrefine.config import CONFIG
-from xrefine.models.fourier_model import XRR_Fourier_PINN
+from xrefine.models.fourier_model import FourierConvPINN
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.train_utils import XRRWeightedLoss, save_pinn_report
@@ -35,7 +35,7 @@ def debug_overfit():
     print(f"\n[TARGET PARAMS]\n{params_true}\n")
 
     # 3. 모델 및 최적화 도구 준비
-    model = XRR_Fourier_PINN(config=config, device=str(device)).to(device)
+    model = FourierConvPINN(config=config, device=str(device)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr, weight_decay=1e-4)
     criterion = XRRWeightedLoss(q_grid)
     

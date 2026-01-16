@@ -88,7 +88,7 @@ class AugmentationConfig(BaseModel):
     measure_step_range: Range = [0.001, 0.1]
 
 class ModelArchConfig(BaseModel):
-    model_type: Literal['cnn', 'transformer', 'vit'] = 'vit'
+    model_type: Literal['fourier_conv', 'fourier_vit', 'latent_trans'] = 'fourier_conv'
     hidden_dim: int = 128
     encoder_depth: int = 4
     

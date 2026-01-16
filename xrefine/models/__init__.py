@@ -23,7 +23,7 @@ def get_model(config) -> BasePINNModel:
         # Import all models to ensure registration
         from .vit import XRR_ViT_PINN
         from .transformer import XRR_Transformer_PINN
-        from .fourier_model import XRR_Fourier_PINN
+        from .fourier_model import FourierConvPINN
         
     if model_type not in MODEL_REGISTRY:
         raise ValueError(

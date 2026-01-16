@@ -13,7 +13,7 @@ from xrefine.models.common import BasePINNModel, FourierFeatureMapping
 from xrefine.models import register_model
 from xrefine.constants import LOG_MASK_VALUE  # [Import Constants]
 
-class LegacyCNNEncoder(nn.Module):
+class FourierConvEncoder(nn.Module):
     """
     Ported XRRPhysicsModel Encoder logic.
     Structure: [Conv1d(7) -> BN -> Leaky -> Drop -> MaxPool(2)] x Depth
@@ -119,14 +119,14 @@ class LegacyCNNEncoder(nn.Module):
         return self.regressor(feat)
 
 
-@register_model("cnn")
-class XRR_Fourier_PINN(BasePINNModel):
+@register_model("fourier_conv")
+class FourierConvPINN(BasePINNModel):
     """
     Legacy CNN Implementation (Reference: Exp07)
     """
     def __init__(self, config: XRefineConfig):
         super().__init__(config)
-        self.encoder_net = LegacyCNNEncoder(config, self.output_dim)
+        self.encoder_net = FourierConvEncoder(config, self.output_dim)
 
     def encode(self, x: Tensor) -> Tensor:
         return self.encoder_net(x)

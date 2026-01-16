@@ -1,5 +1,5 @@
 """
-Transformer-VAE Physics-Informed Neural Network
+Latent Transformer-VAE PINN (Uncertainty Aware)
 ===============================================
 구조:
 1. Input (Log R) -> Fourier Feature Mapping
@@ -20,7 +20,8 @@ from xrefine.models.common import (
     FourierFeatureMapping, 
     PositionalEncoding
 )
-
+from xrefine.models import register_model
+from xrefine.constants import LOG_MASK_VALUE  # [FIX] 상수 임포트
 
 class TransformerVAEEncoder(nn.Module):
     """Transformer-VAE Encoder (Brain)"""
@@ -53,7 +54,8 @@ class TransformerVAEEncoder(nn.Module):
             dim_feedforward=config.model.dim_feedforward,
             dropout=config.model.dropout,
             batch_first=True,
-            activation=config.model.activation
+            activation=config.model.activation,
+            norm_first=True  # [Recommend] Pre-LN for better convergence
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
@@ -71,8 +73,11 @@ class TransformerVAEEncoder(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(-1)  # (B, S, 1)
             
-        # Intensity Scaling (-9~0 -> 0~1)
-        x_norm = (torch.clamp(x, min=-9.0, max=0.0) + 9.0) / 9.0
+        # [FIX] Intensity Normalization (Sync with CNN/ViT logic)
+        # LOG_MASK_VALUE(-15.0) ~ 0.0 범위를 0 ~ 1 (또는 -1 ~ 1)로 매핑
+        # Transformer는 보통 0~1 입력을 선호하는 경향이 있음 (Positional Encoding과 스케일 매칭)
+        range_val = -LOG_MASK_VALUE  # 15.0
+        x_norm = (torch.clamp(x, min=LOG_MASK_VALUE, max=0.0) + range_val) / range_val
         
         # Fourier + Projection
         fourier_feat = self.fourier(x_norm)  # (B, S, 2M)
@@ -99,10 +104,8 @@ class TransformerVAEEncoder(nn.Module):
         return z, mu, logvar
 
 
-from xrefine.models import register_model
-
-@register_model("transformer")
-class XRR_Transformer_PINN(BasePINNModel):
+@register_model("latent_trans")  # Registry Key
+class LatentTransPINN(BasePINNModel):  # Class Name Updated
     """
     Transformer-VAE 기반 PINN 모델.
     확률적 Latent Space로 불확실성 모델링.
@@ -128,7 +131,7 @@ class XRR_Transformer_PINN(BasePINNModel):
         Returns: (params, r_pred, (mu, logvar, penalty))
         """
         if torch.isnan(r_obs_log).any():
-            r_obs_log = torch.nan_to_num(r_obs_log, nan=-10.0)
+            r_obs_log = torch.nan_to_num(r_obs_log, nan=LOG_MASK_VALUE)
         
         # Encode
         raw_output = self.encode(r_obs_log)

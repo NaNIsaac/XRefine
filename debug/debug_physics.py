@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from xrefine.config import CONFIG
 from xrefine.data.augmentations import XRRAugmentations
-from xrefine.models.fourier_model import XRR_Fourier_PINN
+from xrefine.models.fourier_model import FourierConvPINN
 from xrefine.core.interface import Simulator
 
 def debug_physics_mismatch():
@@ -77,7 +77,7 @@ def debug_physics_mismatch():
     config.instrument.beam_width = beam_width_val
     config.instrument.res = dq_val
     
-    model = XRR_Fourier_PINN(config, device=device)
+    model = FourierConvPINN(config, device=device)
     
     # Prep inputs for Model's internal physics engine
     # (thick, rough_full, sld_full)
