@@ -1,7 +1,9 @@
 """
-XRefine Evaluator (Professional Edition)
-========================================
+XRefine Evaluator (v2.5 Professional Edition)
+=============================================
 Comprehensive performance analysis suite for XRR PINN models.
+Updated for Strict Complex Mode & Explicit Simulator Injection.
+
 Features:
 1. Best/Worst Case Analysis
 2. Learning Dynamics
@@ -19,12 +21,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 from tqdm import tqdm
 
+# [Imports Updated]
 from xrefine.models import get_model
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.config import XRefineConfig
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
+from xrefine.core.abeles import AbelesMatrix  # [New] 필수 추가
 
 # Matplotlib Style Setting
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -39,6 +43,7 @@ class XRREvaluator:
         
         self.config: Optional[XRefineConfig] = None
         self.model = None
+        self.simulator = None  # [New]
         self.results_df: Optional[pd.DataFrame] = None
         self.metrics_summary: Dict[str, Dict] = {}
         self.history: Optional[Dict] = None
@@ -51,31 +56,38 @@ class XRREvaluator:
         self.p_pred = None
 
     def setup(self):
-        """Load checkpoint and initialize model."""
+        """Load checkpoint, config, model, and simulator."""
         logger.info(f"🔍 Initializing Evaluator from {self.checkpoint_path}...")
         
+        # 1. Load Checkpoint
         ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         
+        # 2. Config Restore
         config_data = ckpt.get('config')
         if isinstance(config_data, dict):
             self.config = XRefineConfig(**config_data)
         else:
             self.config = config_data
             
+        # Device & Grid Setup
         self.config.q_grid = self.config.q_grid.to(self.device)
         self.q_grid = self.config.q_grid
         
+        # 3. Model Setup
         self.model = get_model(self.config).to(self.device)
         self.model.load_state_dict(ckpt['model_state_dict'])
         self.model.eval()
         
+        # 4. Simulator Setup (Essential for Generator)
+        self.simulator = AbelesMatrix(device=self.device)
+        
+        # 5. History Restore
         self.history = ckpt.get('history', {})
         logger.info(f"Setup complete. Model: {self.config.model.model_type.upper()}")
 
     @torch.no_grad()
     def run_inference(self):
         """Perform batch inference and store results in memory."""
-        q_grid = self.config.q_grid.to(self.device)
         augmentor = XRRAugmentor(self.config).to(self.device)
         
         split_size = 50 
@@ -84,19 +96,38 @@ class XRREvaluator:
         
         r_t_list, r_p_list, p_t_list, p_p_list = [], [], [], []
         
-        for _ in tqdm(range(num_iters), desc="Running Inference"):
-            # Generate Data
-            r_t_batch, p_t_batch = generate_synthetic_batch(split_size, q_grid, self.config, augmenter=augmentor)
+        logger.info(f"🚀 Running Inference on {self.batch_size} synthetic samples...")
+        
+        for _ in tqdm(range(num_iters), desc="Inference"):
+            # [FIX] Simulator 주입 필수 (Generator API 변경 반영)
+            r_t_batch, p_t_batch = generate_synthetic_batch(
+                batch_size=split_size, 
+                q_grid=self.q_grid, 
+                config=self.config, 
+                simulator=self.simulator,  # [Critical Fix]
+                augmenter=augmentor
+            )
             
-            # Forward
+            # Data Move
             r_t_gpu = r_t_batch.to(self.device)
-            p_t_batch.to(self.device) # Move to GPU
+            # ParamSet tensors are already on GPU from generator, but strictly:
+            # p_t_batch is a ParamSet, handled internally.
             
-            log_r_in = torch.log10(torch.clamp(r_t_gpu, min=1e-11))
-            out = self.model(log_r_in)
-            p_p_batch, r_p_batch = out[0], out[1]
+            # Preprocessing (Log & Clamp)
+            # 학습 때와 동일한 전처리를 위해 1e-15 clamp 사용 (Masking Value 보존)
+            log_r_in = torch.log10(torch.clamp(r_t_gpu, min=1e-15))
             
-            # Collect
+            # Forward (No Fixed Values)
+            out = self.model(log_r_in, fixed_values=None)
+            
+            # Model Output Handling (Tuple vs Tensor)
+            if isinstance(out, tuple):
+                p_p_batch, r_p_batch = out[0], out[1]
+                # aux_output (out[2]) is ignored
+            else:
+                p_p_batch, r_p_batch = out # Fallback for simple models
+            
+            # Collect (CPU Offloading to save GPU memory)
             r_t_list.append(r_t_batch.cpu())
             r_p_list.append(r_p_batch.detach().cpu())
             p_t_list.append(p_t_batch.to(torch.device('cpu')))
@@ -105,6 +136,7 @@ class XRREvaluator:
         # Store globally
         self.r_true = torch.cat(r_t_list)
         self.r_pred = torch.cat(r_p_list)
+        # ParamSet concatenation
         self.p_true = ParamSet.cat(p_t_list)
         self.p_pred = ParamSet.cat(p_p_list)
 
@@ -113,12 +145,13 @@ class XRREvaluator:
         logger.info("📊 Calculating statistics...")
         
         # 1. Curve Metrics (Log MSE)
-        log_t = torch.log10(torch.clamp(self.r_true, min=1e-11))
-        log_p = torch.log10(torch.clamp(self.r_pred, min=1e-11))
+        log_t = torch.log10(torch.clamp(self.r_true, min=1e-15))
+        log_p = torch.log10(torch.clamp(self.r_pred, min=1e-15))
         mse_per_sample = torch.mean((log_t - log_p)**2, dim=1).numpy()
         
         # 2. Parameter Metrics
         all_res = []
+        # DynamicParamSet uses _params dict
         keys = list(self.p_true._params.keys())
         
         for key in keys:
@@ -150,7 +183,8 @@ class XRREvaluator:
 
     def _split_params(self) -> Tuple[List[str], List[str]]:
         keys = sorted(list(self.metrics_summary.keys()))
-        core_keywords = ['thickness', 'roughness', 'sld']
+        core_keywords = ['thickness', 'roughness', 'sld'] # 'sld_imag' also contains 'sld'
+        
         core = [k for k in keys if any(c in k for c in core_keywords)]
         inst = [k for k in keys if k not in core]
         return core, inst
@@ -161,7 +195,6 @@ class XRREvaluator:
 
     def plot_best_worst_cases(self, n=3):
         """[1] 상위/하위 n개 샘플 비교 시각화"""
-        # Group by Sample ID to get average LogMSE (already same per sample, but safe to grab first)
         sample_mse = self.results_df.groupby('Sample_ID')['LogMSE'].first().sort_values()
         
         best_indices = sample_mse.index[:n].values
@@ -192,21 +225,22 @@ class XRREvaluator:
             ax_tbl = plt.subplot(gs[i, 1])
             ax_tbl.axis('off')
             
-            # Get params for this sample
             sample_df = self.results_df[self.results_df['Sample_ID'] == idx]
             
-            # Format text
+            # Clean Table Logic
             text_data = [["Parameter", "True", "Pred", "Diff", "Err%"]]
             colors = []
             
+            # Sort by Parameter name for consistency
+            sample_df = sample_df.sort_values('Parameter')
+            
             for _, row in sample_df.iterrows():
+                # Shorten Names
                 p_name = row['Parameter'].replace("thickness", "d").replace("roughness", "sig")
+                p_name = p_name.replace("sld_imag", "iRho").replace("sld", "Rho")
+                
                 diff = row['Pred'] - row['True']
                 err_p = abs(diff) / (abs(row['True']) + 1e-9) * 100
-                
-                # Highlight critical errors (e.g. > 10%)
-                row_color = "#ffcccc" if err_p > 10 else "#ccffcc"
-                colors.append(row_color)
                 
                 text_data.append([
                     p_name, 
@@ -219,17 +253,17 @@ class XRREvaluator:
             table = ax_tbl.table(cellText=text_data, loc='center', cellLoc='left', colWidths=[0.35, 0.15, 0.15, 0.15, 0.15])
             table.auto_set_font_size(False)
             table.set_fontsize(10)
-            table.scale(1, 1.8)
+            table.scale(1, 1.5)
             
-            # Header Bold
+            # Color Coding
             for (r, c), cell in table.get_celld().items():
                 if r == 0:
                     cell.set_text_props(fontweight='bold')
                     cell.set_facecolor("#eeeeee")
-                elif r > 0 and c == 4: # Err% Column
+                elif r > 0 and c == 4:
                     err_val = float(text_data[r][4].strip('%'))
-                    if err_val > 20: cell.set_facecolor("#ffaaaa") # Red for bad
-                    elif err_val < 5: cell.set_facecolor("#aaffaa") # Green for good
+                    if err_val > 20: cell.set_facecolor("#ffaaaa") 
+                    elif err_val < 5: cell.set_facecolor("#aaffaa")
         
         plt.tight_layout()
         plt.savefig(self.exp_dir / "eval_1_best_worst.png", dpi=100)
@@ -256,10 +290,10 @@ class XRREvaluator:
         ax.set_title("Learning Rate")
         ax.grid(True, alpha=0.3)
         
-        # Supervision Weight (Important!)
+        # Supervision Weight
         ax = axes[2]
         ax.plot(self.history.get('sup_weight', []), color='orange')
-        ax.set_title("Supervision Weight (Curriculum)")
+        ax.set_title("Supervision Weight")
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -281,10 +315,7 @@ class XRREvaluator:
             sub = self.results_df[self.results_df['Parameter'] == key]
             ax = axes[i]
             
-            # X: True Value, Y: Abs Error
             sc = ax.scatter(sub['True'], sub['AbsError'], alpha=0.2, c=sub['LogMSE'], cmap='viridis')
-            
-            # Trend line
             sns.regplot(x='True', y='AbsError', data=sub, ax=ax, scatter=False, color='red', line_kws={'alpha':0.5})
             
             ax.set_title(f"{key}\nErr vs Value")
@@ -292,20 +323,21 @@ class XRREvaluator:
             ax.set_ylabel("Absolute Error")
             ax.grid(True, alpha=0.3)
             
-        plt.colorbar(sc, ax=axes, label='Reconstruction Error (LogMSE)')
+        # Hide empty plots
+        for j in range(i + 1, len(axes)): axes[j].axis('off')
+
+        plt.tight_layout()
         plt.savefig(self.exp_dir / "eval_3_error_vs_value.png", dpi=100)
         plt.close()
 
     def plot_pearson_map(self):
         """[4] Parameter Entanglement (Pearson Correlation of Errors)"""
-        # Pivot: Rows=Samples, Cols=Parameter Errors
         pivot_df = self.results_df.pivot(index='Sample_ID', columns='Parameter', values='Error')
-        
         corr = pivot_df.corr()
         
         plt.figure(figsize=(12, 10))
         sns.heatmap(corr, annot=False, cmap='coolwarm', center=0, vmin=-1, vmax=1)
-        plt.title("Parameter Error Correlation (Entanglement Map)\nRed: Params move together (Confounded)", fontsize=14)
+        plt.title("Parameter Error Correlation (Entanglement Map)", fontsize=14)
         plt.tight_layout()
         plt.savefig(self.exp_dir / "eval_4_pearson_map.png", dpi=100)
         plt.close()
@@ -335,13 +367,12 @@ class XRREvaluator:
                 
                 r2 = self.metrics_summary[key]['R2']
                 # Shorten title
-                title_key = key.replace("thickness", "d").replace("roughness", "sig").replace("sld", "rho")
+                title_key = key.replace("thickness", "d").replace("roughness", "sig") \
+                               .replace("sld_imag", "iRho").replace("sld", "Rho")
                 ax.set_title(f"{title_key}\nR²: {r2:.3f}", fontsize=10)
                 ax.grid(True, alpha=0.3)
                 
-            # Hide empty axes
-            for j in range(i + 1, len(axes)):
-                axes[j].axis('off')
+            for j in range(i + 1, len(axes)): axes[j].axis('off')
                 
             plt.tight_layout()
             plt.savefig(self.exp_dir / f"report_corr_{group_name.lower()}.png", dpi=150)
@@ -352,7 +383,6 @@ class XRREvaluator:
         header = f"{'Parameter':<25} | {'MAE':<10} | {'MAPE(%)':<10} | {'R2 Score':<10}"
         logger.info("\n" + header + "\n" + "-" * 65)
         
-        # Sort keys so Core params come first
         core_keys, inst_keys = self._split_params()
         
         for k in core_keys + inst_keys:
@@ -362,13 +392,10 @@ class XRREvaluator:
 
     def report_physical_consistency(self):
         """[5] 물리적 일관성 체크 리포트"""
-        # Condition: Roughness < 0.5 * Thickness
-        # We need to pair roughness and thickness for the same layer
-        
         layer_names = set([k.split('.')[0] for k in self.metrics_summary.keys() if '.' in k])
         
-        lines = ["\n[Physical Consistency Check]"]
-        lines.append(f"{'{Layer':<15} | {'Violation Ratio':<15} | {'Avg Violation (Å)'}")
+        lines = ["\n[Physical Consistency Check (Roughness < 0.5 * Thickness)]"]
+        lines.append(f"{'Layer':<15} | {'Violation Ratio':<15} | {'Avg Violation (Å)'}")
         lines.append("-" * 50)
         
         pivot_pred = self.results_df.pivot(index='Sample_ID', columns='Parameter', values='Pred')
@@ -394,7 +421,6 @@ class XRREvaluator:
         self.run_inference()
         self.calculate_metrics()
         
-        # [FIX] Print Report First
         self.report()
         
         logger.info("🎨 Generating Visualization Reports...")
@@ -402,10 +428,7 @@ class XRREvaluator:
         self.plot_training_curves()
         self.plot_error_vs_value()
         self.plot_pearson_map()
-        
-        # [FIX] Save Correlation Plots
         self.save_correlation_plots()
-        
         self.report_physical_consistency()
         
         logger.info(f"\n✅ Evaluation Complete! Reports saved in: {self.exp_dir}")
@@ -416,6 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=1000)
     args = parser.parse_args()
+    
     evaluator = XRREvaluator(args.checkpoint, args.batch_size)
     evaluator.setup()
     evaluator.evaluate_all()
