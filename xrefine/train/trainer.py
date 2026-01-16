@@ -192,7 +192,8 @@ class XRefineTrainer:
     @torch.no_grad()
     def validate(self, curr_sup_w: float):
         self.model.eval()
-        
+
+        # 1. 검증 데이터 생성
         r_meas, p_true = generate_synthetic_batch(
             batch_size=self.cfg.train.batch_size, 
             q_grid=self.q_grid, 
@@ -203,31 +204,39 @@ class XRefineTrainer:
         r_meas = r_meas.to(self.device)
         p_true = p_true.to(self.device)
 
-        log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
+        # [FIX] Clamp를 1e-15로 변경 (Masking Value 보존)
+        log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-15))
 
+        # 2. Forward Pass (FIXED)
+        # [중요] 검증 시에는 정답(p_true)을 주입하지 않아야(None) 모델의 실제 예측 성능을 측정할 수 있습니다.
         p_pred, r_recon, aux_output = self.model(log_r_obs, fixed_values=None)
 
+        # 3. VAE KL Loss Calculation
         kl_loss = 0.0
+        phys_penalty = torch.tensor(0.0, device=self.device)
+        
         if isinstance(aux_output, tuple):
             mu, logvar, phys_penalty = aux_output
             kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
             kl_loss = torch.mean(kl_div).item() * 0.001
         else:
             phys_penalty = aux_output
-            
-        # [FIX: Unpack 5 values here too]
+
+        # 4. Loss Calculation (FIXED Unpacking)
+        # XRRWeightedLoss returns: (total, base, fringe, qc, param)
         loss_main, _, _, _, loss_param = self.criterion(
             p_pred, r_recon, log_r_obs, p_true, 
             self.cfg, curr_sup_w, phys_penalty
         )
-        
+
         metrics = {
             "loss": loss_main.item() + kl_loss,
             "loss_param": loss_param.item() if isinstance(loss_param, torch.Tensor) else loss_param,
             "kl_loss": kl_loss
         }
         
-        return metrics, p_pred, r_recon, log_r_obs, p_true  # p_true 추가 반환
+        # [FIX] Return signature updated: p_true added
+        return metrics, p_pred, r_recon, log_r_obs, p_true
 
     def fit(self, resume: bool = False):
         if resume:
