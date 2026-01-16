@@ -1,3 +1,7 @@
+"""
+Data Generator (SSOT Pattern Applied)
+=====================================
+"""
 import torch
 from torch import Tensor
 from torch.utils.data import IterableDataset, DataLoader
@@ -8,66 +12,128 @@ from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 from xrefine.data.augmentations import XRRAugmentor
 
+
 def generate_synthetic_batch(
-    batch_size: int, 
-    q_grid: Tensor, 
-    config: XRefineConfig, 
-    simulator: Optional[AbelesMatrix] = None, 
+    batch_size: int,
+    q_grid: torch.Tensor,
+    config: XRefineConfig,
+    simulator: AbelesMatrix,
     augmenter: Optional[XRRAugmentor] = None
-) -> Tuple[Tensor, ParamSet]:
-    """
-    Generate a synthetic batch of XRR data using dynamic layer configuration.
-    Returns: (Reflectivity [Linear], ParamSet)
-    """
-    device = config.device
+) -> Tuple[torch.Tensor, ParamSet]:
+    
+    device = config.device 
     q_grid = q_grid.to(device)
-    
-    if simulator is None:
-        simulator = AbelesMatrix(device=device)
-    
-    # 1. Parameter Sampling (Dynamic)
-    # This replaces the manual field iteration with the class method
-    params_gt = ParamSet.from_config(config.sample, batch_size=batch_size, device=device)
 
-    # 2. Structure Assembly
-    thickness, roughness, sld_full = params_gt.assemble_structure()
-
-    q_batch = q_grid.view(1, -1).expand(batch_size, -1)
+    # 1. Layers Parameters Generation
+    thickness_list = []
+    roughness_list = []
+    sld_real_list = []
+    sld_imag_list = []
     
-    # Offset Augmentation
-    # DynamicParamSet supports .tth_offset if it's in the params dict
-    if 'tth_offset' in params_gt._params:
-        tth_offset = params_gt.tth_offset
-        tth_offset_rad = tth_offset * (3.14159 / 180.0) / 2.0
-        q_offset = (4 * 3.14159 / config.instrument.wavelength) * torch.sin(tth_offset_rad)
-        q_batch = q_batch + q_offset
-
-    # 3. Physics Simulation (Pure)
-    refl_pure = simulator(
+    layer_names = [] 
+    
+    for layer in config.sample.layers:
+        layer_names.append(layer.name)
+        
+        # GPU Random Generation
+        t = torch.rand(batch_size, 1, device=device) * (layer.thickness[1] - layer.thickness[0]) + layer.thickness[0]
+        r = torch.rand(batch_size, 1, device=device) * (layer.roughness[1] - layer.roughness[0]) + layer.roughness[0]
+        s_r = torch.rand(batch_size, 1, device=device) * (layer.sld[1] - layer.sld[0]) + layer.sld[0]
+        
+        if layer.sld_imag:
+            s_i = torch.rand(batch_size, 1, device=device) * (layer.sld_imag[1] - layer.sld_imag[0]) + layer.sld_imag[0]
+        else:
+            s_i = torch.zeros(batch_size, 1, device=device)
+            
+        thickness_list.append(t)
+        roughness_list.append(r)
+        sld_real_list.append(s_r)
+        sld_imag_list.append(s_i)
+        
+    # Substrate
+    sub = config.sample.substrate
+    sub_r = torch.rand(batch_size, 1, device=device) * (sub.roughness[1] - sub.roughness[0]) + sub.roughness[0]
+    sub_sld_r = torch.rand(batch_size, 1, device=device) * (sub.sld[1] - sub.sld[0]) + sub.sld[0]
+    sub_sld_i = torch.rand(batch_size, 1, device=device) * (sub.sld_imag[1] - sub.sld_imag[0]) + sub.sld_imag[0]
+    
+    # Ambient Parameters (For Physics)
+    amb_sld_r = torch.zeros(batch_size, 1, device=device)
+    amb_sld_i = torch.zeros(batch_size, 1, device=device)
+    amb_thickness = torch.zeros(batch_size, 1, device=device)
+    
+    # ---------------------------------------------------------
+    # Stack Tensors (B, N) -> For Simulator
+    # ---------------------------------------------------------
+    d_stack = torch.stack([amb_thickness] + thickness_list, dim=1).squeeze(-1)
+    sigma_stack = torch.stack(roughness_list + [sub_r], dim=1).squeeze(-1)
+    
+    rho_stack = torch.stack([amb_sld_r] + sld_real_list + [sub_sld_r], dim=1).squeeze(-1)
+    rho_imag_stack = torch.stack([amb_sld_i] + sld_imag_list + [sub_sld_i], dim=1).squeeze(-1)
+    sld_stack = torch.complex(rho_stack, rho_imag_stack)
+    
+    # 2. Physics Simulation
+    if q_grid.dim() == 1:
+        q_batch = q_grid.unsqueeze(0).expand(batch_size, -1)
+    else:
+        q_batch = q_grid
+        
+    reflectivity = simulator(
         q=q_batch,
-        thickness=thickness,
-        roughness=roughness,
-        sld=sld_full,
-        sample_length=params_gt.L,
-        beam_width=params_gt.beam_width,
+        thickness=d_stack,
+        roughness=sigma_stack,
+        sld=sld_stack,
         wavelength=config.instrument.wavelength
     )
+    
+    # 3. ParamSet Packaging
+    flat_params = {}
+    
+    # (1) Layers
+    for i, name in enumerate(layer_names):
+        flat_params[f"{name}.thickness"] = thickness_list[i]
+        flat_params[f"{name}.roughness"] = roughness_list[i]
+        flat_params[f"{name}.sld"] = sld_real_list[i]
+        flat_params[f"{name}.sld_imag"] = sld_imag_list[i]
+        
+    # (2) Substrate
+    flat_params["Substrate.roughness"] = sub_r
+    flat_params["Substrate.sld"] = sub_sld_r
+    flat_params["Substrate.sld_imag"] = sub_sld_i
+    
+    # (3) Instrument Parameters Generation (Dynamic & Strict)
+    # [FIX] 하드코딩 제거 -> ParamSet.INSTRUMENT_KEYS 사용
+    # ParamSet은 set이므로 정렬해서 순서 보장 (디버깅 용이성)
+    target_keys = sorted(list(ParamSet.INSTRUMENT_KEYS))
+    
+    for key in target_keys:
+        rng = None
+        if hasattr(config.sample, key):
+            rng = getattr(config.sample, key)
+            
+        if rng is not None:
+            # Random Generation (Uniform)
+            val = torch.rand(batch_size, 1, device=device) * (rng[1] - rng[0]) + rng[0]
+            flat_params[key] = val
+        else:
+            # [STRICT] Config에 정의되지 않은 키가 ParamSet에 요구되면 에러 발생
+            raise ValueError(
+                f"🚨 Critical Configuration Error: Parameter '{key}' is required by ParamSet but missing in config.sample!\n"
+                f"   Please check your 'config.yaml' under 'sample:' section."
+            )
 
-    # 4. Augmentation & Post-processing
+    # ParamSet 생성
+    params = ParamSet(
+        params=flat_params,
+        layer_names=layer_names,
+        device=device
+    )
+
+    # 4. Augmentation
     if augmenter is not None:
-        # Augmenter expects Linear Scale input
-        r_final = augmenter(q_batch, refl_pure, params_gt)
-    else:
-        # Manual Augmentation fallback
-        r_final = refl_pure * params_gt.i0 + torch.pow(10.0, params_gt.bkg)
-        # Add Noise
-        noise = torch.randn_like(r_final) * config.augmentations.intensity_noise_scale * r_final
-        r_final = r_final + noise
+        reflectivity = augmenter(q_batch, reflectivity, params)
+        
+    return reflectivity, params
 
-    # Return Linear Scale
-    r_final = torch.clamp(r_final, min=1e-12, max=2.0)
-
-    return r_final, params_gt
 
 class XRRStreamingDataset(IterableDataset):
     def __init__(self, config: XRefineConfig, q_grid: torch.Tensor, steps_per_epoch: int):
@@ -75,10 +141,7 @@ class XRRStreamingDataset(IterableDataset):
         self.config = config
         self.q_grid = q_grid
         self.steps_per_epoch = steps_per_epoch
-        try:
-            self.augmenter = XRRAugmentor(config).to(config.device)
-        except:
-            self.augmenter = None
+        self.augmenter = XRRAugmentor(config).to(config.device)
 
     def __iter__(self):
         # Worker Loop
@@ -87,6 +150,7 @@ class XRRStreamingDataset(IterableDataset):
                 batch_size=self.config.train.batch_size,
                 q_grid=self.q_grid,
                 config=self.config,
+                simulator=AbelesMatrix(device=self.config.device),
                 augmenter=self.augmenter
             )
             yield r_noisy, params_gt

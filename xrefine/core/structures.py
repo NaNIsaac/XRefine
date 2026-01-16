@@ -1,11 +1,9 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Iterator, Self, Any
+from dataclasses import dataclass
+from typing import Dict, List, Self
 import torch
 from torch import Tensor
-import torch.nn as nn
-from xrefine.constants import RE_ANGSTROM
-from xrefine.config import SampleConfig  # We need to know the structure to build params
+from xrefine.config import SampleConfig
 
 @dataclass
 class Instrument:
