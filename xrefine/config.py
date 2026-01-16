@@ -19,6 +19,7 @@ Range = Annotated[List[float], Field(min_length=2, max_length=2)]
 class MaterialConfig(BaseModel):
     """Configuration for a single material property (SLD, Roughness)."""
     sld: Range
+    sld_imag: Optional[Range] = None
     roughness: Range
 
 class LayerConfig(BaseModel):
@@ -27,6 +28,7 @@ class LayerConfig(BaseModel):
     thickness: Range
     roughness: Range
     sld: Range
+    sld_imag: Optional[Range] = None
     repeats: int = Field(default=1, ge=1, description="Number of times this layer repeats")
     
     # Optional: Link parameters? (e.g. if repeats>1, are they identical or independent?)
@@ -39,10 +41,12 @@ class SubstrateConfig(BaseModel):
     name: str = "Substrate"
     roughness: Range
     sld: Range
+    sld_imag: Optional[Range] = None
 
 class AmbientConfig(BaseModel):
     name: str = "Ambient"
     sld: float = 0.0 # Usually fixed 0 for air
+    sld_imag: Optional[Range] = None
     # Ambient roughness is effectively the top layer's roughness in some formalisms, 
     # but in Abeles, roughness is an interface property.
     # We assign roughness to the interface BELOW the layer.

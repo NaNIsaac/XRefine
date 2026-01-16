@@ -103,11 +103,14 @@ class BasePINNModel(nn.Module, ABC):
             mapping.append((f"{layer.name}.thickness", layer.thickness))
             mapping.append((f"{layer.name}.roughness", layer.roughness))
             mapping.append((f"{layer.name}.sld", layer.sld))
+            if layer.sld_imag is not None:
+                mapping.append((f"{layer.name}.sld_imag", layer.sld_imag))
             
         # 2. Substrate
         mapping.append(("Substrate.roughness", config.sample.substrate.roughness))
         mapping.append(("Substrate.sld", config.sample.substrate.sld))
-        
+        if config.sample.substrate.sld_imag is not None:
+            mapping.append(("Substrate.sld_imag", config.sample.substrate.sld_imag))
         # 3. Instrument (Global)
         # Iterate over known instrument keys in ParamSet
         for key in ParamSet.INSTRUMENT_KEYS:

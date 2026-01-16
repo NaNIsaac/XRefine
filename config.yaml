@@ -1,8 +1,8 @@
-# XRefine Configuration File (v2.3 - Explicit Weighting)
-# ========================================================
+# XRefine Configuration File (v2.4 - Metal/Absorption Support & Target Focused)
+# ==============================================================================
 
 # [General Settings]
-experiment_name: "XRefine_ViT_Universal_v3"
+experiment_name: "XRefine_ViT_Metal_v1"
 save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
 log_dir: "logs"
 device: "cuda"
@@ -24,32 +24,38 @@ instrument:
 # [Sample Configuration]
 # =============================================================================
 sample:
-  # 1. Global / Instrumental Parameters
-  L: [5.0, 20.0]
-  beam_width: [0.01, 0.2]
-  bkg: [-9.0, -5.0]
+  # 1. Global / Instrumental Parameters (Nuisance)
+  # 범위는 넉넉하게 잡되, 가중치를 낮춰서 피팅 보조용으로만 사용
+  L: [5.0, 25.0]
+  beam_width: [0.01, 0.3]
+  bkg: [-10.0, -5.0]
   i0: [0.8, 1.2]
   dq: [0.0005, 0.005]
-  tth_offset: [-0.02, 0.02]
+  tth_offset: [-0.03, 0.03]
 
-  # 2. Substrate
+  # 2. Substrate (Nuisance)
   substrate:
     name: "Substrate"
-    roughness: [0.0, 5.0]
-    sld: [18.0, 22.0]
+    roughness: [0.0, 8.0]
+    sld: [18.0, 22.0]       # Si ~20
+    sld_imag: [0.0, 1.0]    # 기판은 보통 흡수가 적음 (Si ~0.17)
 
   # 3. Layers (Top -> Bottom)
   layers:
-    - name: "Top_Layer"       # Thin Top Layer
-      thickness: [5.0, 100.0]
+    - name: "Top_Layer"       # Thin Top Layer (Contamination/Oxide)
+      thickness: [0.0, 50.0]  # 얇은 층 가정
       roughness: [0.0, 10.0]
-      sld: [0.0, 80.0]
+      sld: [0.0, 50.0]        # 유기물~산화물 수준
+      sld_imag: [0.0, 1.0]    # 오염 물질은 흡수가 거의 없음
       repeats: 1
 
-    - name: "Target_Film"     # Main Film (Target)
-      thickness: [50.0, 1000.0]
-      roughness: [0.0, 20.0]
-      sld: [5.0, 100.0]
+    - name: "Target_Film"     # [MAIN GOAL] Main Film
+      thickness: [10.0, 1200.0] # 박막 범위 확장
+      roughness: [0.0, 30.0]
+      # SLD Real: 0(유기물) ~ 130(금/백금)까지 모든 금속 커버
+      sld: [0.0, 130.0]       
+      # SLD Imag: 0(투명) ~ 12.0(강한 흡수)까지 현실적 모든 물질 커버
+      sld_imag: [0.0, 12.0]   
       repeats: 1
 
 # [Augmentation Config]
@@ -79,31 +85,34 @@ train:
   w_gradient: 50.0
   w_log_base: 50.0
   
-  # Parameter Weights
+  # ===========================================================================
+  # [Focus Strategy] Target Film Priority Weights
+  # ===========================================================================
   weights:
-    # Removed generic 'layer_weights' for clarity.
-    # Everything is now explicit in specific_layer_weights.
     
     specific_layer_weights:
       Target_Film:
-        thickness: 100.0  # Critical
-        sld: 20.0         # Critical
-        roughness: 1.0    # Less critical
+        thickness: 200.0  # [Highest Priority] 프린지 주기를 결정하는 핵심
+        sld: 100.0        # [High Priority] 임계각 및 진폭 결정
+        sld_imag: 50.0    # [High Priority] 기울기 및 감쇠 형상 결정
+        roughness: 20.0   # [Medium Priority] 고각도 감쇠 결정 (중요도 상향)
         
-      Top_Layer:
-        thickness: 1.0    # Nuisance-like
-        roughness: 0.5    # Nuisance-like
-        sld: 1.0
+      Top_Layer:          # Nuisance: 틀려도 크게 상관없음 (가중치 낮춤)
+        thickness: 0.5    
+        roughness: 0.5    
+        sld: 0.5
+        sld_imag: 0.1     # 거의 무시
         
-      Substrate:
-        roughness: 0.5    # Nuisance
-        sld: 1.0          # Should be easy
+      Substrate:          # Nuisance
+        roughness: 0.5    
+        sld: 1.0          # 기준점이므로 너무 낮추진 않음
+        sld_imag: 0.1
     
-    global_weights:
+    global_weights:       # Nuisance: 피팅을 위한 보정값일 뿐임
       i0: 1.0
       bkg: 1.0
-      L: 1.0
-      beam_width: 1.0
+      L: 0.1
+      beam_width: 0.1
       dq: 1.0
       tth_offset: 1.0
 

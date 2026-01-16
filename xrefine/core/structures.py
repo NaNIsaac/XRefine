@@ -171,14 +171,34 @@ class DynamicParamSet:
         
         roughness = torch.cat(r_layers + [r_sub], dim=1) # (B, N+1)
 
-        # 3. SLD
-        # Ambient + Layers + Substrate
-        # Ambient SLD is 0 (Air)
-        sld_amb = torch.zeros((batch_size, 1), device=self.device)
-        sld_layers = [self._params[f"{name}.sld"] for name in self.layer_names]
-        sld_sub = self._params["Substrate.sld"]
+        # 3. SLD Assembly (Complex Support)
+        # Ambient(Air)는 보통 실수 0.0 (흡수 없음)
+        sld_amb = torch.zeros((batch_size, 1), device=self.device, dtype=torch.complex128)
         
-        sld = torch.cat([sld_amb] + sld_layers + [sld_sub], dim=1) # (B, 1+N+1) = (B, N+2)
+        sld_list = []
+        
+        # Layers + Substrate 순회
+        all_layers = self.layer_names + ["Substrate"]
+        
+        for name in all_layers:
+            # Real Part
+            rho_real = self._params[f"{name}.sld"]
+            
+            # Imaginary Part (Absorption) 확인
+            imag_key = f"{name}.sld_imag"
+            if imag_key in self._params:
+                rho_imag = self._params[imag_key]
+                # SLD = Real + 1j * Imag
+                sld_val = rho_real.double() + 1j * rho_imag.double()
+            else:
+                # 없으면 실수만 사용 (Complex128 형변환)
+                sld_val = rho_real.double() + 0j
+            
+            sld_list.append(sld_val)
+
+        # Ambient + Layers/Substrate 결합
+        # 결과 shape: (B, N+2), dtype=complex128
+        sld = torch.cat([sld_amb] + sld_list, dim=1)
 
         return thickness, roughness, sld
     
