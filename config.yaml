@@ -69,7 +69,7 @@ augmentations:
 
 # [Training Hyperparameters]
 train:
-  batch_size: 32
+  batch_size: 512
   lr: 0.0005
   weight_decay: 1.0e-4
   epochs: 300
