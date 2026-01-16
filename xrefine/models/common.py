@@ -97,27 +97,32 @@ class BasePINNModel(nn.Module, ABC):
         Returns: [('Film.thickness', [100, 500]), ('Film.roughness', [1, 5]), ...]
         """
         mapping = []
-        
+
         # 1. Layers
         for layer in config.sample.layers:
             mapping.append((f"{layer.name}.thickness", layer.thickness))
             mapping.append((f"{layer.name}.roughness", layer.roughness))
             mapping.append((f"{layer.name}.sld", layer.sld))
-            if layer.sld_imag is not None:
-                mapping.append((f"{layer.name}.sld_imag", layer.sld_imag))
             
+            # [FIX] sld_imag (Absorption) 추가 확인
+            if getattr(layer, 'sld_imag', None) is not None:
+                mapping.append((f"{layer.name}.sld_imag", layer.sld_imag))
+
         # 2. Substrate
         mapping.append(("Substrate.roughness", config.sample.substrate.roughness))
         mapping.append(("Substrate.sld", config.sample.substrate.sld))
-        if config.sample.substrate.sld_imag is not None:
-            mapping.append(("Substrate.sld_imag", config.sample.substrate.sld_imag))
+        
+        # [FIX] Substrate sld_imag 추가 확인
+        if getattr(config.sample.substrate, 'sld_imag', None) is not None:
+             mapping.append(("Substrate.sld_imag", config.sample.substrate.sld_imag))
+
         # 3. Instrument (Global)
-        # Iterate over known instrument keys in ParamSet
         for key in ParamSet.INSTRUMENT_KEYS:
             if hasattr(config.sample, key):
                 rng = getattr(config.sample, key)
-                mapping.append((key, rng))
-                
+                if rng is not None:
+                    mapping.append((key, rng))
+
         return mapping
 
     @property
