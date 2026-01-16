@@ -120,13 +120,17 @@ train:
 # [Model Architecture]
 # =============================================================================
 model:
-  model_type: "vit"
-  hidden_dim: 256
-  encoder_depth: 6
-  dropout: 0.15
-  mapping_size: 0
-  fourier_scale: 50.0
-  n_heads: 8
-  dim_feedforward: 1024
-  activation: "gelu"
-  patch_size: 16
+  model_type: "cnn"       # [중요] vit -> cnn 변경
+  
+  # CNN Hyperparameters
+  hidden_dim: 256         # 시작 채널 수 (128~256 추천)
+  encoder_depth: 6        # 레이어 깊이 (4~8 추천)
+  
+  # Fourier Features (XRR의 고주파 Fringe를 잡는 핵심)
+  mapping_size: 64        # 0이면 일반 CNN, 64면 Fourier-CNN (필수!)
+  fourier_scale: 40.0     # 주파수 스케일 (보통 20~50 사이)
+  
+  # MLP Head
+  dim_feedforward: 1024   # 마지막 추론 레이어 크기
+  dropout: 0.1            # 과적합 방지
+  activation: "leaky_relu" # CNN은 보통 ReLU 계열 사용
