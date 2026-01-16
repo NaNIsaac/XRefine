@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Optional
 import shutil
 import time
-import os
 
 import torch
 import torch.optim as optim
@@ -39,6 +38,30 @@ def log_epoch(msg: str):
     """tqdm과 충돌하지 않게 로그 출력"""
     tqdm.write(msg)
 
+
+def optimize_modules(simulator, model):
+    """
+    [Speed Boost] Kernel Fusion for Physics & AI
+    작은 연산들을 하나로 합쳐 CPU 오버헤드를 제거합니다.
+    Windows에서는 'inductor' 백엔드가 불안정할 수 있어 예외처리합니다.
+    """
+    print("🚀 Compiling Physics & Model with torch.compile...")
+    
+    try:
+        # 1. 물리 엔진 컴파일 (가장 효과 큼)
+        # mode='reduce-overhead': CUDA Graph를 사용하여 실행 속도 극대화
+        simulator = torch.compile(simulator, mode="reduce-overhead")
+        
+        # 2. 모델 컴파일
+        model = torch.compile(model, mode="reduce-overhead")
+        print("✅ Torch Compile Successful! (Mode: reduce-overhead)")
+        
+    except Exception as e:
+        print(f"⚠️ Compile failed (Windows/GPU compatibility issue): {e}")
+        print("🔄 Fallback to Eager Mode (Standard Execution)")
+        
+    return simulator, model
+
 class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
         self.cfg = config
@@ -47,12 +70,15 @@ class XRefineTrainer:
         # 모델 및 그리드 설정
         self.model = model.to(self.device)
         self.q_grid = config.q_grid.to(self.device)
-        
+
         # 유틸리티 초기화
         self.criterion = XRRWeightedLoss(self.q_grid).to(self.device)
         self.augmenter = XRRAugmentor(config).to(self.device)
         self.simulator = AbelesMatrix(device=self.device)  # Cached Simulator
-        
+
+        if config.device.type == 'cuda':
+            self.simulator, self.model = optimize_modules(self.simulator, self.model)
+
         # 최적화 설정
         self.optimizer = optim.AdamW(
             self.model.parameters(), 
@@ -124,11 +150,9 @@ class XRefineTrainer:
                 simulator=self.simulator,
                 augmenter=self.augmenter
             )
-            r_meas = r_meas.to(self.device)
-            p_true = p_true.to(self.device)
 
             log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
-            self.optimizer.zero_grad(set_to_none=True)
+            self.optimizer.zero_grad()
 
             with torch.amp.autocast('cuda', enabled=self.scaler is not None):
                 # 2. Forward Pass (FIXED)
@@ -201,10 +225,7 @@ class XRefineTrainer:
             simulator=self.simulator,  # Cached
             augmenter=self.augmenter
         )
-        r_meas = r_meas.to(self.device)
-        p_true = p_true.to(self.device)
 
-        # [FIX] Clamp를 1e-15로 변경 (Masking Value 보존)
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-15))
 
         # 2. Forward Pass (FIXED)

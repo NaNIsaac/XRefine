@@ -6,14 +6,18 @@ Main entry point for XRefine using Typer.
 import typer
 import ast
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from typing_extensions import Annotated
+
+import torch
 
 from xrefine.config import XRefineConfig, CONFIG
 from xrefine.train import XRefineTrainer
 from xrefine.evaluate import XRREvaluator 
 from xrefine.models import get_model
 from xrefine.logger import logger
+
+torch.set_float32_matmul_precision('high')
 
 # [Performance] Disable pretty exceptions to prevent browser freeze in Colab
 app = typer.Typer(help="XRefine: Physics-Informed AI for XRR Analysis", pretty_exceptions_enable=False)
