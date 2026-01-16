@@ -5,9 +5,6 @@ from typing import Literal, Self, Tuple, Optional, List, Annotated
 from pydantic import BaseModel, Field, ConfigDict, field_validator, field_serializer, PrivateAttr
 
 from xrefine.physics_utils import tth2q
-# We will refactor ParamSet later, but for now we keep the import to avoid breaking everything immediately
-# effectively we are breaking compatibility here, but it's part of the plan.
-# from xrefine.core.structures import ParamSet 
 
 # Helper Type for Ranges [min, max]
 Range = Annotated[List[float], Field(min_length=2, max_length=2)]
@@ -19,7 +16,8 @@ Range = Annotated[List[float], Field(min_length=2, max_length=2)]
 class MaterialConfig(BaseModel):
     """Configuration for a single material property (SLD, Roughness)."""
     sld: Range
-    sld_imag: Optional[Range] = None
+    # [FIX] Mandatory: Must be explicitly defined in YAML
+    sld_imag: Range 
     roughness: Range
 
 class LayerConfig(BaseModel):
@@ -28,29 +26,22 @@ class LayerConfig(BaseModel):
     thickness: Range
     roughness: Range
     sld: Range
-    sld_imag: Optional[Range] = None
+    # [FIX] Mandatory: Optional제거 -> YAML에 없으면 에러 발생 (안전장치)
+    sld_imag: Range 
     repeats: int = Field(default=1, ge=1, description="Number of times this layer repeats")
-    
-    # Optional: Link parameters? (e.g. if repeats>1, are they identical or independent?)
-    # For now, assume independent stochastic sampling or identical? 
-    # Usually in PINN training we sample ONCE for a batch item.
-    # If repeats=10, we usually mean a Superlattice where d_1...d_10 are identical or coupled.
-    # Let's assume coupled (identical) for now to keep parameter space small.
 
 class SubstrateConfig(BaseModel):
     name: str = "Substrate"
     roughness: Range
     sld: Range
-    sld_imag: Optional[Range] = None
+    # [FIX] Mandatory for strict complex simulation
+    sld_imag: Range 
 
 class AmbientConfig(BaseModel):
     name: str = "Ambient"
     sld: float = 0.0 # Usually fixed 0 for air
-    sld_imag: Optional[Range] = None
-    # Ambient roughness is effectively the top layer's roughness in some formalisms, 
-    # but in Abeles, roughness is an interface property.
-    # We assign roughness to the interface BELOW the layer.
-    # So Ambient doesn't have a roughness, the Top Layer has a roughness (Amb/Top interface).
+    # Ambient is usually transparent (0), but keeping structure consistent
+    sld_imag: Range = Field(default=[0.0, 0.0]) 
 
 class SampleConfig(BaseModel):
     """
@@ -96,7 +87,7 @@ class ModelArchConfig(BaseModel):
     kernel_size: int = 15
     dilation: int = 2
     fourier_scale: float = 40.0
-    mapping_size: int = 0 # Default to 0 as per recent fix
+    mapping_size: int = 0 
     
     # Transformer/ViT
     n_heads: int = 4
@@ -108,10 +99,6 @@ class ModelArchConfig(BaseModel):
     patch_size: int = 16
 
 class WeightConfig(BaseModel):
-    # Dynamic weights handled by dict or list? 
-    # For now, keep it simple, or use a default value for generic parameters.
-    # We will likely move to a dictionary-based weight system in the Trainer.
-    # This class might become obsolete or generic.
     global_weights: dict[str, float] = Field(
         default={
             "L": 5.0, "i0": 1.0, "bkg": 1.0, "beam_width": 10.0,
@@ -119,7 +106,6 @@ class WeightConfig(BaseModel):
         }
     )
     layer_weights: dict[str, float] = Field(default_factory=dict)
-    # [New] Specific Layer Overrides: {'LayerName': {'thickness': 50.0}}
     specific_layer_weights: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 class TrainingConfig(BaseModel):
@@ -161,7 +147,7 @@ class XRefineConfig(BaseModel):
     q_len: int = 2000
 
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
-    sample: SampleConfig = Field(description="Dynamic Layer Configuration") # REPLACES ranges
+    sample: SampleConfig = Field(description="Dynamic Layer Configuration")
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
     train: TrainingConfig = Field(default_factory=TrainingConfig)
     model: ModelArchConfig = Field(default_factory=ModelArchConfig)
@@ -193,7 +179,6 @@ class XRefineConfig(BaseModel):
     def save_yaml(self, path: str | Path):
         save_path = Path(path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        # Use Pydantic's mode='json' to handle Path/Device serialization automatically
         data = self.model_dump(mode='json')
         with open(save_path, 'w', encoding='utf-8') as f:
             yaml.dump(data, f, sort_keys=False)
@@ -204,12 +189,21 @@ class XRefineConfig(BaseModel):
             data = yaml.safe_load(f)
         return cls(**data)
 
-# Dummy/Default Config for initialization
-# We need to define a sensible default SampleConfig
+# Dummy Default for strict testing
 DEFAULT_SAMPLE = SampleConfig(
-    substrate=SubstrateConfig(roughness=[0.5, 5.0], sld=[19.0, 21.0]),
+    substrate=SubstrateConfig(
+        roughness=[0.5, 5.0], 
+        sld=[19.0, 21.0], 
+        sld_imag=[0.0, 0.5] # Explicitly added
+    ),
     layers=[
-        LayerConfig(name="Film", thickness=[100.0, 500.0], roughness=[1.0, 5.0], sld=[20.0, 60.0])
+        LayerConfig(
+            name="Film", 
+            thickness=[100.0, 500.0], 
+            roughness=[1.0, 5.0], 
+            sld=[20.0, 60.0],
+            sld_imag=[0.0, 2.0] # Explicitly added
+        )
     ]
 )
 
