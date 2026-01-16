@@ -60,23 +60,28 @@ class DynamicParamSet:
             params[f"{layer.name}.thickness"] = sample_val(layer.thickness)
             params[f"{layer.name}.roughness"] = sample_val(layer.roughness)
             params[f"{layer.name}.sld"] = sample_val(layer.sld)
-        
+            
+            # [FIX] Handle sld_imag (Absorption)
+            if hasattr(layer, 'sld_imag') and layer.sld_imag is not None:
+                params[f"{layer.name}.sld_imag"] = sample_val(layer.sld_imag)
+
         # 2. Substrate
-        # Substrate has roughness (interface with bottom layer) and SLD. Thickness is infinite (0).
         params["Substrate.roughness"] = sample_val(config.substrate.roughness)
         params["Substrate.sld"] = sample_val(config.substrate.sld)
         
-        # 3. Ambient
-        # Ambient is usually fixed air (sld=0), but we can make it learnable if needed.
-        # For now, treat it as fixed constant 0 in assembly, unless specified.
-        # We generally DON'T store fixed constants in learnable params dict.
+        # [FIX] Handle Substrate sld_imag
+        if hasattr(config.substrate, 'sld_imag') and config.substrate.sld_imag is not None:
+            params["Substrate.sld_imag"] = sample_val(config.substrate.sld_imag)
 
+        # 3. Ambient (Usually fixed, but ready for extension)
+        
         # 4. Instrument/Global Parameters
-        # config.sample has these ranges now
         for key in cls.INSTRUMENT_KEYS:
             if hasattr(config, key):
                 rng = getattr(config, key)
-                params[key] = sample_val(rng)
+                # Pydantic model might return None if optional, check it
+                if rng is not None:
+                    params[key] = sample_val(rng)
 
         return cls(params, layer_names, device)
 
@@ -140,64 +145,50 @@ class DynamicParamSet:
     def assemble_structure(self) -> tuple[Tensor, Tensor, Tensor]:
         """
         Construct the monolithic tensors required by the Abeles engine.
-        
-        Returns:
-            thickness: (B, N_layers + 1) [Ambient, L1, ..., LN]
-            roughness: (B, N_layers + 1) [Amb/L1, L1/L2, ..., LN/Sub]
-            sld:       (B, N_layers + 2) [Ambient, L1, ..., LN, Sub]
+        Now supports Complex SLD (Absorption).
         """
         # Batch size check
         first_key = next(iter(self._params))
         batch_size = self._params[first_key].shape[0]
 
         # 1. Thickness
-        # Ambient (0) + Layers
-        # Note: Abeles expects Ambient thickness to be 0 (or dummy).
         t_amb = torch.zeros((batch_size, 1), device=self.device)
         t_layers = [self._params[f"{name}.thickness"] for name in self.layer_names]
-        
-        thickness = torch.cat([t_amb] + t_layers, dim=1) # (B, 1+N)
+        thickness = torch.cat([t_amb] + t_layers, dim=1) 
 
         # 2. Roughness
-        # Interfaces: Amb/L1, L1/L2, ..., LN/Sub
-        # We assume layer.roughness is the roughness of the interface ON TOP of the layer.
-        # Wait, usually roughness is associated with an interface.
-        # L1.roughness -> Amb/L1
-        # L2.roughness -> L1/L2
-        # Sub.roughness -> LN/Sub
-        
         r_layers = [self._params[f"{name}.roughness"] for name in self.layer_names]
         r_sub = self._params["Substrate.roughness"]
-        
-        roughness = torch.cat(r_layers + [r_sub], dim=1) # (B, N+1)
+        roughness = torch.cat(r_layers + [r_sub], dim=1) 
 
-        # 3. SLD Assembly (Complex Support)
-        # Ambient(Air)는 보통 실수 0.0 (흡수 없음)
+        # 3. SLD (Complex Support)
+        # Ambient is 0 (Air), assumed real=0, imag=0
+        # If we wanted complex ambient, we'd need config support, but Air is usually 0+0j.
+        # We start with a complex tensor for ambient.
         sld_amb = torch.zeros((batch_size, 1), device=self.device, dtype=torch.complex128)
         
         sld_list = []
-        
-        # Layers + Substrate 순회
         all_layers = self.layer_names + ["Substrate"]
         
         for name in all_layers:
             # Real Part
             rho_real = self._params[f"{name}.sld"]
             
-            # Imaginary Part (Absorption) 확인
+            # Imaginary Part (Absorption) Check
             imag_key = f"{name}.sld_imag"
             if imag_key in self._params:
                 rho_imag = self._params[imag_key]
-                # SLD = Real + 1j * Imag
+                # Combine: Real + 1j * Imag
+                # Ensure double precision for compatibility with new AbelesMatrix
                 sld_val = rho_real.double() + 1j * rho_imag.double()
             else:
-                # 없으면 실수만 사용 (Complex128 형변환)
+                # If no imag part, treat as real (0j)
                 sld_val = rho_real.double() + 0j
             
             sld_list.append(sld_val)
 
-        # Ambient + Layers/Substrate 결합
-        # 결과 shape: (B, N+2), dtype=complex128
+        # Concatenate: Ambient + Layers + Substrate
+        # Result shape: (B, N+2), dtype=complex128
         sld = torch.cat([sld_amb] + sld_list, dim=1)
 
         return thickness, roughness, sld
