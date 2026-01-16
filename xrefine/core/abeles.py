@@ -1,6 +1,7 @@
 """
-Abeles Matrix Method Module (Float32/Complex64 High-Speed JIT)
-==============================================================
+Abeles Matrix Method Module (Eager Mode - No JIT)
+=================================================
+A100 최적화: JIT 오버헤드 제거, Pure PyTorch 구현
 """
 from __future__ import annotations
 import math
@@ -9,18 +10,19 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional
 
-# [핵심] JIT 컴파일 함수 (Float32 버전)
-@torch.jit.script
-def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
-                    thickness: Tensor,  # (B, 1, N) Float32
-                    roughness: Tensor,  # (B, 1, N+1) Float32
-                    sld: Tensor         # (B, 1, N+2) Complex64
-                    ) -> Tensor:
+# [핵심] JIT(@torch.jit.script) 제거 -> Eager Mode 실행
+# Complex64 호환성 문제 해결 및 디버깅 용이성 확보
+def abeles_core(q: Tensor,          # (B, Q, 1)
+                thickness: Tensor,  # (B, 1, N)
+                roughness: Tensor,  # (B, 1, N+1)
+                sld: Tensor         # (B, 1, N+2)
+                ) -> Tensor:
     
     # -----------------------------------------------------------
     # 1. Wave Vector Calculation
     # -----------------------------------------------------------
-    # Float32/Complex64 연산
+    # k_z^2 = (q/2)^2 - 4*pi*sld
+    # A100에서는 Eager Mode도 충분히 빠름 (커널 퓨전 자동 적용)
     k_n = torch.sqrt((q / 2.0)**2 - 4.0 * math.pi * sld)
     
     k_curr = k_n[..., :-1] 
@@ -30,6 +32,7 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
     # 2. Phase Shift (Beta)
     # -----------------------------------------------------------
     beta = 1j * thickness * k_curr
+    # exp 연산은 GPU 병렬처리가 매우 잘됨
     exp_beta = torch.exp(beta)
     exp_m_beta = torch.exp(-beta)
 
@@ -39,9 +42,8 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
     sig2 = roughness ** 2
     denom = k_curr + k_next
     
-    # Epsilon for safe division (Complex Float)
-    # [Diff] 1e-16 -> 1e-7 (Float32 한계 고려)
-    epsilon = torch.tensor(1e-9 + 0j, dtype=torch.complex64, device=q.device)
+    # Epsilon (Float32/Complex64)
+    epsilon = 1e-9  # 스칼라로 더해도 브로드캐스팅됨
     
     denom_safe = denom + epsilon
     roughness_factor = torch.exp(-2.0 * k_curr * k_next * sig2)
@@ -56,8 +58,9 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
     m_11 = exp_m_beta
 
     # -----------------------------------------------------------
-    # 5. Loop (JIT Optimized)
+    # 5. Loop (Manual Unrolling is not needed in PyTorch 2.x)
     # -----------------------------------------------------------
+    # 초기값 (Ambient Interface) -> Index 0
     m_accum_00 = m_00[..., 0]
     m_accum_01 = m_01[..., 0]
     m_accum_10 = m_10[..., 0]
@@ -65,16 +68,10 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
 
     num_layers = thickness.shape[2] 
     
+    # Python Loop지만 연산 자체가 텐서 통연산이라 빠름
     for i in range(1, num_layers):
-        a = m_accum_00
-        b = m_accum_01
-        c = m_accum_10
-        d = m_accum_11
-        
-        e = m_00[..., i]
-        f = m_01[..., i]
-        g = m_10[..., i]
-        h = m_11[..., i]
+        a, b, c, d = m_accum_00, m_accum_01, m_accum_10, m_accum_11
+        e, f, g, h = m_00[..., i], m_01[..., i], m_10[..., i], m_11[..., i]
         
         m_accum_00 = a * e + b * g
         m_accum_01 = a * f + b * h
@@ -88,6 +85,7 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
     denominator = m_accum_00 + epsilon
     
     quotient = numerator / denominator
+    # 복소수 절대값 제곱 수동 계산 (안전성)
     reflectivity = quotient.real**2 + quotient.imag**2
     
     return reflectivity
@@ -109,34 +107,32 @@ class AbelesMatrix(nn.Module):
         if self.device is None: self.device = q.device
         
         # -----------------------------------------------------------
-        # Python Side: Prepare Tensors (Float32 & Complex64)
+        # Prepare Tensors (Float32 & Complex64)
         # -----------------------------------------------------------
-        # [Diff] .float() 사용
+        # 입력 데이터가 이미 GPU에 있다면 .to() 호출 최소화
         q_float = q.float()
         thick_float = thickness.float()
         rough_float = roughness.float()
         
-        # SLD Complex Conversion
         if torch.is_complex(sld):
             sld_c = sld.to(dtype=torch.complex64)
         else:
             sld_c = sld.float().to(dtype=torch.complex64)
             
-        # Relative SLD
         amb_sld = sld_c[:, 0:1]
-        # [Diff] Imaginary Epsilon 1e-9 (Float32 Resolution)
         sld_complex = (sld_c - amb_sld) * 1e-6 + 1j * 1e-9
         
         # Broadcasting Alignment
-        q_in = q_float.unsqueeze(-1).to(dtype=torch.complex64) # (B, Q, 1)
-        sld_in = sld_complex.unsqueeze(1) # (B, 1, N)
-        thick_in = thick_float.unsqueeze(1) # (B, 1, N)
-        rough_in = rough_float.unsqueeze(1) # (B, 1, N)
+        # 생성과 동시에 Device 지정하여 Copy 오버헤드 방지
+        q_in = q_float.unsqueeze(-1).to(dtype=torch.complex64)
+        sld_in = sld_complex.unsqueeze(1)
+        thick_in = thick_float.unsqueeze(1)
+        rough_in = rough_float.unsqueeze(1)
 
         # -----------------------------------------------------------
-        # Call JIT Core
+        # Call Pure Core
         # -----------------------------------------------------------
-        reflectivity = abeles_jit_core(q_in, thick_in, rough_in, sld_in)
+        reflectivity = abeles_core(q_in, thick_in, rough_in, sld_in)
         
         # -----------------------------------------------------------
         # Footprint Correction
