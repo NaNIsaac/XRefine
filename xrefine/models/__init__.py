@@ -3,7 +3,7 @@ XRefine Models Registry
 =======================
 Decorator-based model registration for easy extension.
 """
-from typing import Dict, Type, Callable
+from typing import Dict, Type
 from .common import BasePINNModel
 
 # Registry for PINN models
@@ -21,8 +21,8 @@ def get_model(config) -> BasePINNModel:
     model_type = config.model.model_type.lower()
     if model_type not in MODEL_REGISTRY:
         # Import all models to ensure registration
-        from .vit import XRR_ViT_PINN
-        from .transformer import XRR_Transformer_PINN
+        from .vit import FourierViTPINN
+        from .transformer import LatentTransPINN
         from .fourier_model import FourierConvPINN
         
     if model_type not in MODEL_REGISTRY:
