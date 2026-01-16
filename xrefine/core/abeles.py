@@ -1,6 +1,6 @@
 """
-Abeles Matrix Method Module (JIT Stable / Backward Fix)
-=======================================================
+Abeles Matrix Method Module (Float32/Complex64 High-Speed JIT)
+==============================================================
 """
 from __future__ import annotations
 import math
@@ -9,29 +9,27 @@ import torch.nn as nn
 from torch import Tensor
 from typing import Optional
 
-# [핵심] JIT 컴파일 함수
+# [핵심] JIT 컴파일 함수 (Float32 버전)
 @torch.jit.script
-def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex128
-                    thickness: Tensor,  # (B, 1, N) Float64
-                    roughness: Tensor,  # (B, 1, N+1) Float64
-                    sld: Tensor         # (B, 1, N+2) Complex128
+def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex64
+                    thickness: Tensor,  # (B, 1, N) Float32
+                    roughness: Tensor,  # (B, 1, N+1) Float32
+                    sld: Tensor         # (B, 1, N+2) Complex64
                     ) -> Tensor:
     
     # -----------------------------------------------------------
     # 1. Wave Vector Calculation
     # -----------------------------------------------------------
-    # k_z^2 = (q/2)^2 - 4*pi*sld
+    # Float32/Complex64 연산
     k_n = torch.sqrt((q / 2.0)**2 - 4.0 * math.pi * sld)
     
-    k_curr = k_n[..., :-1] # Layer j
-    k_next = k_n[..., 1:]  # Layer j+1
+    k_curr = k_n[..., :-1] 
+    k_next = k_n[..., 1:] 
 
     # -----------------------------------------------------------
     # 2. Phase Shift (Beta)
     # -----------------------------------------------------------
-    # beta = k * d * 1j
     beta = 1j * thickness * k_curr
-    
     exp_beta = torch.exp(beta)
     exp_m_beta = torch.exp(-beta)
 
@@ -39,16 +37,13 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex128
     # 3. Fresnel Coefficient
     # -----------------------------------------------------------
     sig2 = roughness ** 2
-    
-    # Denom safe div (JIT Safe Logic)
     denom = k_curr + k_next
     
-    # Epsilon for safe division (Complex Double)
-    epsilon = torch.tensor(1e-16 + 0j, dtype=torch.complex128, device=q.device)
+    # Epsilon for safe division (Complex Float)
+    # [Diff] 1e-16 -> 1e-7 (Float32 한계 고려)
+    epsilon = torch.tensor(1e-9 + 0j, dtype=torch.complex64, device=q.device)
     
-    # Soft Protection
     denom_safe = denom + epsilon
-
     roughness_factor = torch.exp(-2.0 * k_curr * k_next * sig2)
     r_n = ((k_curr - k_next) / denom_safe) * roughness_factor
 
@@ -87,15 +82,10 @@ def abeles_jit_core(q: Tensor,          # (B, Q, 1) Complex128
         m_accum_11 = c * f + d * h
 
     # -----------------------------------------------------------
-    # 6. Reflectivity (Backward Fix)
+    # 6. Reflectivity
     # -----------------------------------------------------------
     numerator = m_accum_10
     denominator = m_accum_00 + epsilon
-    
-    # [FIX] JIT Backward Error 해결
-    # 기존: reflectivity = (numerator / denominator).abs() ** 2
-    # 문제: .abs()의 역전파가 복소수에서 .sign()을 호출하며 에러 발생
-    # 해결: 복소수 나눗셈 후, 실수부 제곱 + 허수부 제곱으로 직접 계산
     
     quotient = numerator / denominator
     reflectivity = quotient.real**2 + quotient.imag**2
@@ -119,27 +109,29 @@ class AbelesMatrix(nn.Module):
         if self.device is None: self.device = q.device
         
         # -----------------------------------------------------------
-        # Python Side: Prepare Tensors (Float64 & Complex128)
+        # Python Side: Prepare Tensors (Float32 & Complex64)
         # -----------------------------------------------------------
-        q_dbl = q.double()
-        thick_dbl = thickness.double()
-        rough_dbl = roughness.double()
+        # [Diff] .float() 사용
+        q_float = q.float()
+        thick_float = thickness.float()
+        rough_float = roughness.float()
         
         # SLD Complex Conversion
         if torch.is_complex(sld):
-            sld_c = sld.to(dtype=torch.complex128)
+            sld_c = sld.to(dtype=torch.complex64)
         else:
-            sld_c = sld.double().to(dtype=torch.complex128)
+            sld_c = sld.float().to(dtype=torch.complex64)
             
-        # Relative SLD & Epsilon
+        # Relative SLD
         amb_sld = sld_c[:, 0:1]
-        sld_complex = (sld_c - amb_sld) * 1e-6 + 1j * 1e-16
+        # [Diff] Imaginary Epsilon 1e-9 (Float32 Resolution)
+        sld_complex = (sld_c - amb_sld) * 1e-6 + 1j * 1e-9
         
         # Broadcasting Alignment
-        q_in = q_dbl.unsqueeze(-1).to(dtype=torch.complex128) # (B, Q, 1)
+        q_in = q_float.unsqueeze(-1).to(dtype=torch.complex64) # (B, Q, 1)
         sld_in = sld_complex.unsqueeze(1) # (B, 1, N)
-        thick_in = thick_dbl.unsqueeze(1) # (B, 1, N)
-        rough_in = rough_dbl.unsqueeze(1) # (B, 1, N)
+        thick_in = thick_float.unsqueeze(1) # (B, 1, N)
+        rough_in = rough_float.unsqueeze(1) # (B, 1, N)
 
         # -----------------------------------------------------------
         # Call JIT Core
@@ -150,16 +142,16 @@ class AbelesMatrix(nn.Module):
         # Footprint Correction
         # -----------------------------------------------------------
         if sample_length is not None and beam_width is not None:
-            sample_length = sample_length.double()
-            beam_width = beam_width.double()
+            sample_length = sample_length.float()
+            beam_width = beam_width.float()
             
-            sin_alpha = torch.clamp(q_dbl * wavelength / (4.0 * math.pi), -1.0, 1.0)
+            sin_alpha = torch.clamp(q_float * wavelength / (4.0 * math.pi), -1.0, 1.0)
             sigma_b = beam_width / 2.3548
             arg = (sample_length * sin_alpha) / (2.8284 * sigma_b + 1e-9)
             reflectivity = reflectivity * torch.erf(arg)
 
-        return reflectivity.float()
-
+        return reflectivity
+    
 def abeles(*args, **kwargs):
     model = AbelesMatrix(device=args[0].device if args else None)
     return model(*args, **kwargs)
