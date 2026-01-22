@@ -99,6 +99,10 @@ class XRefineTrainer:
         return w_start * (1 - progress) + w_end * progress
 
     def train_epoch(self, epoch: int, curr_sup_w: float):
+        # [ENHANCED] Support curriculum learning in enhanced models
+        if hasattr(self.model, 'set_epoch'):
+            self.model.set_epoch(epoch)
+        
         self.model.train()
         total_loss = 0.0
         # 모니터링용 누적 변수 추가

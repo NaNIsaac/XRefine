@@ -1,7 +1,7 @@
 import torch
 import yaml
 from pathlib import Path
-from typing import Literal, Self, Tuple, Optional, List, Annotated
+from typing import Literal, Self, Optional, List, Annotated
 from pydantic import BaseModel, Field, ConfigDict, field_validator, field_serializer, PrivateAttr
 
 from xrefine.physics_utils import tth2q

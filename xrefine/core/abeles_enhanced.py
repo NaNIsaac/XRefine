@@ -1,0 +1,152 @@
+"""
+Abeles Matrix Method (Enhanced with Soft Clamping)
+==================================================
+Physics engine for X-ray reflectivity calculation.
+Optimized for batch processing and gradient descent.
+
+IMPROVEMENTS:
+- Soft clamping for better gradient flow at boundaries
+- More robust numerical stability
+"""
+from __future__ import annotations
+import math
+import torch
+import torch.nn as nn
+from torch import Tensor
+from typing import Optional
+
+from xrefine.physics_utils_enhanced import soft_clamp, robust_log10
+
+
+def abeles_core(q: Tensor, thickness: Tensor, roughness: Tensor, sld: Tensor) -> Tensor:
+    """
+    Core Abeles Matrix Calculation.
+    q: (B, Q, 1) complex
+    thickness, roughness, sld: (B, 1, L)
+    """
+    # k_z calculation
+    # q is already complex, sld is complex
+    k_n = torch.sqrt((q / 2.0)**2 - 4.0 * math.pi * sld)
+    
+    # Layer boundaries
+    k_curr, k_next = k_n[..., :-1], k_n[..., 1:] 
+
+    # Phase shift (beta)
+    beta = 1j * thickness * k_curr
+    exp_beta = torch.exp(beta)
+    exp_m_beta = torch.exp(-beta)
+
+    # Fresnel coefficient with roughness
+    sig2 = roughness ** 2
+    denom = k_curr + k_next
+    epsilon = 1e-9 # Prevent division by zero
+    
+    r_n = ((k_curr - k_next) / (denom + epsilon)) * torch.exp(-2.0 * k_curr * k_next * sig2)
+
+    # Matrix elements
+    m_00 = exp_beta
+    m_01 = r_n * exp_beta
+    m_10 = r_n * exp_m_beta
+    m_11 = exp_m_beta
+
+    # Matrix Multiplication (Accumulation)
+    # Start with first interface
+    m_accum_00, m_accum_01 = m_00[..., 0], m_01[..., 0]
+    m_accum_10, m_accum_11 = m_10[..., 0], m_11[..., 0]
+
+    num_layers = thickness.shape[2] 
+    for i in range(1, num_layers):
+        # Current layer matrix elements
+        e, f, g, h = m_00[..., i], m_01[..., i], m_10[..., i], m_11[..., i]
+        
+        # Previous accumulation state
+        a, b, c, d = m_accum_00, m_accum_01, m_accum_10, m_accum_11
+        
+        # Matrix Multiply: M_acc = M_acc * M_next
+        m_accum_00 = a * e + b * g
+        m_accum_01 = a * f + b * h
+        m_accum_10 = c * e + d * g
+        m_accum_11 = c * f + d * h
+
+    # Reflectivity R = |M_10 / M_00|^2
+    quotient = m_accum_10 / (m_accum_00 + epsilon)
+    return quotient.real**2 + quotient.imag**2
+
+
+class AbelesMatrixEnhanced(nn.Module):
+    """
+    Enhanced Abeles implementation with soft clamping.
+    
+    Improvements:
+    - Soft clamping for sin(alpha) preserves gradients
+    - Robust log operations
+    - Better numerical stability
+    """
+    def __init__(self, device: torch.device | None = None):
+        super().__init__()
+        self.device = device
+
+    def forward(self, 
+                q: Tensor, 
+                thickness: Tensor, 
+                roughness: Tensor, 
+                sld: Tensor,
+                sample_length: Optional[Tensor] = None,
+                beam_width: Optional[Tensor] = None,
+                wavelength: float = 1.5406) -> Tensor:
+        
+        if self.device is None: self.device = q.device
+        
+        # [Optimization] CPU Sync Blocking
+        # wavelength를 Scalar가 아닌 0-d Tensor로 변환하여 연산에 참여시킴
+        wl_tensor = torch.tensor(wavelength, device=self.device, dtype=torch.float32)
+        
+        # 1. Input Preparation
+        q_f = q.float()
+        
+        # SLD & Complex handling (Strict Complex Mode)
+        if torch.is_complex(sld):
+            sld_c = sld.to(dtype=torch.complex64)
+        else:
+            sld_c = sld.float().to(dtype=torch.complex64)
+            
+        # Subtract ambient SLD (Relative SLD)
+        amb_sld = sld_c[:, 0:1]
+        sld_comp = (sld_c - amb_sld) * 1e-6 + 1j * 1e-9 # 1e-6 scale for SLD unit
+        
+        # Expand dimensions for broadcasting (B, Q, L)
+        q_in = q_f.unsqueeze(-1).to(dtype=torch.complex64) # (B, Q, 1)
+        sld_in = sld_comp.unsqueeze(1) # (B, 1, L)
+        t_in = thickness.float().unsqueeze(1)
+        r_in = roughness.float().unsqueeze(1)
+
+        # 2. Physics Core
+        reflectivity = abeles_core(q_in, t_in, r_in, sld_in)
+        
+        # 3. Footprint Correction
+        # R_corr = R * erf((L * sin(alpha)) / (sqrt(2) * sigma_beam))
+        if sample_length is not None and beam_width is not None:
+            sl = sample_length.float()
+            bw = beam_width.float()
+            
+            # [ENHANCED] Soft clamping instead of hard clamp
+            # sin(theta) approx = lambda * q / (4 * pi)
+            sin_alpha_raw = q_f * wl_tensor / (4.0 * math.pi)
+            sin_alpha = soft_clamp(sin_alpha_raw, -1.0, 1.0, sharpness=20.0)
+            
+            # Beam sigma (FWHM -> Sigma)
+            sigma_b = bw / 2.3548
+            
+            # Error function argument
+            # 2.8284 ~= 2 * sqrt(2)
+            arg = (sl * sin_alpha) / (2.8284 * sigma_b + 1e-9)
+            
+            reflectivity = reflectivity * torch.erf(arg)
+
+        return reflectivity
+    
+
+def abeles_enhanced(*args, **kwargs):
+    """Functional interface wrapper for enhanced Abeles"""
+    model = AbelesMatrixEnhanced(device=args[0].device if args else None)
+    return model(*args, **kwargs)
