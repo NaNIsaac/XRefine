@@ -1,9 +1,3 @@
-"""
-Legacy CNN Model (Updated Normalization)
-==========================================
-Reference: runs/exp07_fourier_hires/xrr_model.py
-Architecture: Standard CNN with Fourier Features
-"""
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -11,7 +5,7 @@ from torch import Tensor
 from xrefine.config import XRefineConfig
 from xrefine.models.common import BasePINNModel, FourierFeatureMapping
 from xrefine.models import register_model
-from xrefine.constants import LOG_MASK_VALUE  # [Import Constants]
+from xrefine.constants import LOG_MASK_VALUE
 
 class FourierConvEncoder(nn.Module):
     """
@@ -64,14 +58,16 @@ class FourierConvEncoder(nn.Module):
             ))
             curr_dim = out_dim
 
-        self.encoder = nn.Sequential(*layers)
+        # [FIX 1] 변수명 통일 (self.encoder -> self.backbone)
+        self.backbone = nn.Sequential(*layers)
 
         # 3. Global Pooling
         self.global_pool = nn.AdaptiveAvgPool1d(1)
 
         # 4. Regressor (MLP)
+        # [FIX 2] 입력 차원 수정: Global Stats(3)가 Concat되므로 +3 추가
         self.regressor = nn.Sequential(
-            nn.Linear(curr_dim, mlp_hidden),
+            nn.Linear(curr_dim + 3, mlp_hidden), 
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(dropout),
             nn.Linear(mlp_hidden, mlp_hidden // 2),
@@ -100,25 +96,19 @@ class FourierConvEncoder(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(1)
 
-        # [FIX 2] Global Hint Extraction (Before Normalization)
-        # Log Scale 데이터에서 물리적 특징(높이, 임계각, 기울기) 추출
-        # x shape: (Batch, Channel=1, Length) -> dim=-1 기준 통계
-        
-        # 1. Max Intensity (전체 높이 -> I0, Background 힌트)
+        # [FIX 2 Related] Global Hint Extraction
+        # 1. Max Intensity
         stat_max = x.max(dim=-1)[0] # (B, 1)
         
-        # 2. Low-Q Mean (임계각 영역 평균 -> SLD 힌트)
-        # 앞쪽 50개 포인트의 평균 높이
+        # 2. Low-Q Mean
         stat_low_q = x[..., :50].mean(dim=-1) # (B, 1)
         
-        # 3. Std Dev (전체 변동성 -> Roughness, Fringe Depth 힌트)
+        # 3. Std Dev
         stat_std = x.std(dim=-1) # (B, 1)
         
         # 합치기: (B, 3)
         global_stats = torch.cat([stat_max, stat_low_q, stat_std], dim=1)
 
-        # --- 기존 전처리 및 인코더 로직 ---
-        
         # Intensity Normalization (-1 ~ 1)
         x_norm = (torch.clamp(x, min=LOG_MASK_VALUE, max=0.0) - LOG_MASK_VALUE/2) / (-LOG_MASK_VALUE/2)
 
@@ -129,6 +119,7 @@ class FourierConvEncoder(nn.Module):
             x_in = x_norm
             
         # CNN Backbone
+        # [FIX 1 Related] 이제 self.backbone이 정의되어 있으므로 에러 없음
         feat = self.backbone(x_in) # (B, C, L_pooled)
         feat = self.global_pool(feat).flatten(1) # (B, C) -> (B, Hidden_Dim)
 
