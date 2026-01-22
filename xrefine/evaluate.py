@@ -29,6 +29,7 @@ from xrefine.config import XRefineConfig
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
 from xrefine.core.abeles import AbelesMatrix  # [New] 필수 추가
+from xrefine.core.smearing import abeles_constant_smearing
 
 # Matplotlib Style Setting
 plt.style.use('seaborn-v0_8-whitegrid')

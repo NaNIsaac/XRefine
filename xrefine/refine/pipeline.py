@@ -1,16 +1,6 @@
 """
-Refinement Pipeline
-===================
-Multi-stage Refinement Workflow with Smart Cutoff
-
-Usage:
-    from xrefine.refine import run_real_inference
-
-    # 1. 자동 감지 (권장)
-    run_real_inference(ckpt, data, q_cutoff=None)
-
-    # 2. 수동 지정
-    run_real_inference(ckpt, data, q_cutoff=0.45)
+Refinement Pipeline (Clean One-Shot Output)
+===========================================
 """
 import torch
 import numpy as np
@@ -19,468 +9,324 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
 from copy import deepcopy
-from scipy.signal import find_peaks
 
-from xrefine.config import XRefineConfig, CONFIG
-from xrefine.models import XRR_Fourier_PINN
+from xrefine.config import XRefineConfig
+from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
 from xrefine.core.structures import ParamSet
+from xrefine.core.abeles import AbelesMatrix
+from xrefine.core.smearing import abeles_constant_smearing
 from xrefine.logger import logger
 
 from xrefine.refine.config import RefinementConfig, StageConfig, DEFAULT_CONFIG
 from xrefine.constants import LOG_MASK_VALUE, LOG_VALID_THRESHOLD
 from xrefine.refine.optimizer import optimize_step
-from xrefine.refine.losses import CORRELATION
 
+# -----------------------------------------------------------------------------
+# Metric & Report Utils
+# -----------------------------------------------------------------------------
+def calculate_fom(model, params, log_r_obs, config, cutoff):
+    device = config.device
+    q_grid = config.q_grid.to(device)
+    with torch.no_grad():
+        t, r, s = params.assemble_structure()
+        r_sim = model.simulator(q_grid, t, r, s) 
+        i0 = params.i0 if hasattr(params, 'i0') else 1.0
+        bkg = params.bkg if hasattr(params, 'bkg') else -10.0
+        r_sim = r_sim * i0 + (10**bkg)
+        log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
+        
+        mask = (log_r_obs > LOG_VALID_THRESHOLD) & (q_grid <= cutoff)
+        diff = (log_r_sim - log_r_obs)[mask]
+        mse = torch.mean(diff**2).item()
+    return {"LogMSE": mse}
 
-def auto_detect_cutoff(q: np.ndarray, log_y: np.ndarray, window: int = 15, slope_threshold: float = -1.5) -> float:
+def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
     """
-    [Smart Cutoff] 유효 데이터(> -14.0) 내에서만 신호 끝자락을 탐색합니다.
+    Pandas DataFrame을 이용한 가로형 출력.
+    모든 출력을 하나의 문자열로 합쳐서 로거 타임스탬프 간섭 방지.
     """
-    # 1. [안전장치] 이미 -15.0으로 마스킹된 데이터(측정 범위 밖)는 탐색에서 제외
-    valid_indices = log_y > LOG_VALID_THRESHOLD
+    imse, fmse = fom_init['LogMSE'], fom_final['LogMSE']
+    imp = (imse - fmse) / imse * 100 if imse != 0 else 0
     
-    # 유효 데이터가 너무 적으면 그냥 Max 반환
-    if valid_indices.sum() < window * 2:
-        return q.max()
-        
-    # 유효한 구간만 추출
-    q_valid = q[valid_indices]
-    y_valid = log_y[valid_indices]
+    # 1. 문자열 버퍼 생성
+    lines = []
+    lines.append("="*90)
+    lines.append(f"Result: {stage_name} | LogMSE: {imse:.5f} -> {fmse:.5f} ({imp:+.1f}%)")
+    lines.append("-" * 90)
+
+    all_keys = list(p_final._params.keys())
     
-    max_q = q_valid.max()
+    groups = {
+        "Target": [k for k in all_keys if "Target_Film" in k],
+        "Oxide":  [k for k in all_keys if "Top_Layer" in k],
+        "System": [k for k in all_keys if "Target" not in k and "Top" not in k]
+    }
     
-    # 2. 유효 데이터 끝에서부터(High Q) -> 앞쪽으로(Low Q) 스캔
-    for i in range(len(q_valid) - window, 0, -2):
-        q_seg = q_valid[i : i+window]
-        y_seg = y_valid[i : i+window]
+    name_map = {
+        'thickness': 'd', 'roughness': 'sig', 
+        'sld': 'rho', 'sld_imag': 'iRho',
+        'beam_width': 'Beam', 'tth_offset': 'Offset',
+        'i0': 'I0', 'bkg': 'Bkg', 'L': 'Len', 'dq': 'Res'
+    }
+
+    pd.set_option('display.max_columns', 15)
+    pd.set_option('display.width', 1000)
+    pd.set_option('display.colheader_justify', 'right')
+
+    for label, keys in groups.items():
+        if not keys: continue
         
-        # 선형 회귀로 기울기 계산
-        slope, _ = np.polyfit(q_seg, y_seg, 1)
+        # Sort
+        order = {'thickness': 1, 'roughness': 2, 'sld': 3, 'sld_imag': 4}
+        keys.sort(key=lambda x: order.get(x.split('.')[-1], 99))
         
-        # 기울기가 임계값보다 가파르면(음수) 신호 영역 진입으로 판단
-        if slope < slope_threshold:
-            # 발견된 지점 (여기가 신호의 끝)
-            found_q = q_valid[i + window]
-            return min(found_q + 0.02, max_q) # 0.02 여유 마진
+        data = {}
+        for k in keys:
+            short = k.split('.')[-1]
+            col = name_map.get(short, short)
+            if "Substrate" in k: col = f"Sub_{col}"
+            
+            v_i = p_init._params[k].item()
+            v_f = p_final._params[k].item()
+            
+            diff = v_f - v_i
+            if abs(diff) > 1e-4:
+                val_str = f"{v_f:.3f} ({diff:+.3f})"
+            else:
+                val_str = f"{v_f:.3f}"
+            
+            data[col] = [val_str]
 
-    return max_q
+        df = pd.DataFrame(data, index=[label])
+        
+        # DataFrame을 문자열로 변환 (index 포함)
+        lines.append(df.to_string())
+        lines.append("") # 공백 라인
 
+    lines.append("="*90)
+    
+    # [Fix] 전체를 하나의 문자열로 합치고 맨 앞에 \n 추가
+    full_log_str = "\n" + "\n".join(lines)
+    logger.info(full_log_str)
 
+# -----------------------------------------------------------------------------
+# Main Pipeline
+# -----------------------------------------------------------------------------
 def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
-    """
-    순수 데이터 로드 함수 (전처리 및 마스킹 없음)
-    """
-    df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
-    for col in df.columns:
-        df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
+    try:
+        df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
+        for col in df.columns:
+            df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
+        x_raw, y_raw = df.values[:, 0], df.values[:, 1]
+        x_raw = tth2q(x_raw, config.instrument.wavelength)
+        y_norm = y_raw / (y_raw.max() + 1e-12)
+        log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
+        q_target = config.q_grid.cpu().numpy()
+        log_y_interp = np.interp(q_target, x_raw, log_y_raw)
+        log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = LOG_MASK_VALUE
+        return torch.from_numpy(log_y_interp).float().view(1, -1)
+    except Exception as e:
+        logger.error(f"Failed to load data: {e}")
+        raise
 
-    x_raw, y_raw = df.values[:, 0], df.values[:, 1]
-    x_raw = tth2q(x_raw, config.instrument.wavelength)
-
-    # 정규화 (Peak=1.0)
-    norm_factor = y_raw.max()
-    y_norm = y_raw / (norm_factor + 1e-12)
-    log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
-
-    # Grid Interpolation
-    q_target = config.q_grid.numpy()
-    log_y_interp = np.interp(q_target, x_raw, log_y_raw)
-    
-    # 측정 범위 밖 기본 마스킹
-    log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = LOG_MASK_VALUE
-
-    return torch.from_numpy(log_y_interp).float().view(1, -1)
-
-
-def grid_search_thickness(
-    model, 
-    p_init: ParamSet, 
-    log_r_obs: torch.Tensor, 
-    xrr_config: XRefineConfig,
-    refine_config: RefinementConfig,
-    stage_config: StageConfig
-) -> float:
-    """Grid Search를 사용한 두께 탐색"""
+def grid_search_thickness(model, p_init, log_r_obs, xrr_config, refine_config, stage_config):
+    target_key = stage_config.grid_target_key 
+    if target_key not in p_init._params: return 0.0
     device = xrr_config.device
     q_grid = xrr_config.q_grid.to(device)
     log_r_obs_gpu = log_r_obs.to(device)
-
-    # 임계각 감지
     r_obs_linear = 10 ** log_r_obs_gpu.squeeze()
     peak_idx = int(torch.argmax(r_obs_linear).item())
     q_critical = q_grid[peak_idx].item()
-
-    # 탐색 범위: 임계각 직후 ~ Config에 설정된 Cutoff까지
     q_start = q_critical + 0.01
-    q_end = refine_config.q_cutoff  # [중요] 설정된 Cutoff 활용
-
-    # 요동 감지 (Oscillation Detection)
-    log_r_np = log_r_obs_gpu.squeeze().cpu().numpy()
-    grad = np.abs(np.gradient(log_r_np))
-    window = 20
-    grad_smooth = np.convolve(grad, np.ones(window)/window, mode='same')
-    threshold = np.mean(grad_smooth) * 1.5
-    high_oscillation = grad_smooth > threshold
-    high_osc_mask = torch.from_numpy(high_oscillation).to(device)
-
-    # 최종 마스크
-    mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_start) & (q_grid < q_end) & high_osc_mask
-
-    if mask.sum() < 30:
-        logger.warning(f"Grid Search 유효 포인트 부족. 기본 범위({q_start:.2f}~{q_end:.2f}) 사용")
-        mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_start) & (q_grid < q_end)
-
-    logger.info(f"Grid Search Range: {q_start:.3f} ~ {q_end:.3f} A^-1 ({mask.sum().item()} pts)")
-
-    target_pattern = log_r_obs_gpu[mask]
-    target_mean = target_pattern.mean()
-
-    # Grid 설정
+    q_end = refine_config.q_cutoff 
+    mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid > q_start) & (q_grid < q_end)
     d_min, d_max = stage_config.grid_range
     d_grid = np.linspace(d_min, d_max, stage_config.grid_points)
-
-    p_scan = deepcopy(p_init)
-    p_scan.d_ox.fill_(0.0)
-    p_scan.sig_ox.fill_(0.0)
-    p_scan.rho_ox.fill_(0.0)
-    p_scan.sig_f.fill_(2.0)
-
-    best_corr_loss = 1e9
-    best_d = p_init.d_f.item()
-    c_scores = []
-    m_scores = []
-
+    p_scan = p_init.clone()
+    best_loss = 1e9
+    best_d = p_init._params[target_key].item()
     for d_val in d_grid:
-        p_scan.d_f.fill_(d_val)
+        p_scan._params[target_key].fill_(d_val)
         with torch.no_grad():
-            _, r_sim, _ = model.forward_with_params(p_scan)
+            if hasattr(model, 'forward_with_params'): _, r_sim, _ = model.forward_with_params(p_scan)
+            else:
+                t, r, s = p_scan.assemble_structure()
+                r_sim = model.simulator(q_grid, t, r, s)
             r_sim_norm = r_sim / (r_sim.max() + 1e-12)
             log_r_sim = torch.log10(torch.clamp(r_sim_norm, min=1e-12))
-
             sim_pattern = log_r_sim[mask]
-
-            # Correlation
             vx = sim_pattern - sim_pattern.mean()
-            vy = target_pattern - target_mean
+            vy = log_r_obs_gpu[mask] - log_r_obs_gpu[mask].mean()
             corr = torch.sum(vx * vy) / (torch.sqrt(torch.sum(vx**2)) * torch.sqrt(torch.sum(vy**2)) + 1e-9)
-            c_loss = 1.0 - corr.item()
-            c_scores.append(c_loss)
-
-            # MSE
-            mse = torch.mean((sim_pattern - target_pattern)**2).item()
-            m_scores.append(mse)
-
-            if c_loss < best_corr_loss:
-                best_corr_loss = c_loss
+            loss = 1.0 - corr.item()
+            if loss < best_loss:
+                best_loss = loss
                 best_d = d_val
-
-    # Peak Finding & Candidate Selection
-    peaks_c, _ = find_peaks(-np.array(c_scores), prominence=0.01)
-    min_d_threshold = refine_config.min_thickness_ratio / (q_critical + 1e-9)
-
-    def get_candidates(peak_indices, score_list):
-        cands = []
-        for idx in peak_indices:
-            if d_grid[idx] >= min_d_threshold:
-                cands.append((d_grid[idx], score_list[idx]))
-        
-        # Fallback to global search if no peaks
-        if not cands:
-            arr = np.array(score_list)
-            indices = np.argsort(arr)
-            for idx in indices:
-                if d_grid[idx] >= min_d_threshold:
-                    cands.append((d_grid[idx], score_list[idx]))
-                    if len(cands) >= 3: break
-        
-        cands.sort(key=lambda x: x[1])
-        return cands
-
-    candidates = get_candidates(peaks_c, c_scores)
-    if not candidates:
-        peaks_m, _ = find_peaks(-np.array(m_scores), prominence=0.01)
-        candidates = get_candidates(peaks_m, m_scores)
-
-    if not candidates:
-        return best_d
-
-    # Two-Pass Check for Top 3
-    top_cands = candidates[:3]
-    if len(top_cands) > 1:
-        logger.info(f"Two-Pass 검증: {[f'{d:.1f}A' for d,_ in top_cands]}")
-        final_losses = []
-        for d_cand, _ in top_cands:
-            p_test = deepcopy(p_init)
-            p_test.d_f.fill_(d_cand)
-            p_test.sig_f.fill_(3.0)
-            p_test.d_ox.fill_(0.0)
-
-            # Quick Fit
-            qs = StageConfig(name="Quick", optimize_keys={'sig_f','rho_f'}, fixed_params={'d_f':d_cand}, loss_fn=stage_config.loss_fn, maxiter=30, popsize=15)
-            p_opt = optimize_step(model, p_test, log_r_obs, xrr_config, qs, verbose=False)
-            
-            with torch.no_grad():
-                _, r_s, _ = model.forward_with_params(p_opt)
-                r_s_n = r_s / (r_s.max() + 1e-12)
-                l_s = torch.log10(torch.clamp(r_s_n, min=1e-12))[mask]
-                vx = l_s - l_s.mean()
-                vy = target_pattern - target_mean
-                cr = torch.sum(vx*vy) / (torch.sqrt(torch.sum(vx**2))*torch.sqrt(torch.sum(vy**2)) + 1e-9)
-                final_losses.append((d_cand, 1.0 - cr.item()))
-        
-        final_losses.sort(key=lambda x: x[1])
-        best_d = final_losses[0][0]
-    else:
-        best_d = top_cands[0][0]
-
-    logger.info(f"🎯 Grid Search Selected: d_f = {best_d:.1f} A")
     return best_d
 
-
-def run_refinement(
-    model,
-    p_init: ParamSet,
-    log_r_obs: torch.Tensor,
-    xrr_config: XRefineConfig,
-    refine_config: RefinementConfig = None
-) -> ParamSet:
-    """Multi-stage Refinement 실행"""
-    if refine_config is None:
-        refine_config = DEFAULT_CONFIG
-
+def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
+    if refine_config is None: refine_config = DEFAULT_CONFIG
     p_current = p_init
-    fixed_thickness = None
-
-    logger.info(f"\n{'Stage':<20} | {'d_f':>7} {'σ_f':>6} {'ρ_f':>5} | {'d_ox':>5} {'σ_ox':>5} {'ρ_ox':>5}")
-    logger.info("-" * 70)
-
-    def log_params(stage_name: str, p: ParamSet):
-        logger.info(
-            f"{stage_name:<20} | "
-            f"{p.d_f.item():>7.1f} {p.sig_f.item():>6.1f} {p.rho_f.item():>5.1f} | "
-            f"{p.d_ox.item():>5.1f} {p.sig_ox.item():>5.1f} {p.rho_ox.item():>5.1f}"
-        )
-
-    log_params("AI Init", p_init)
+    log_r_obs_gpu = log_r_obs.to(xrr_config.device)
+    logger.info("Starting Refinement Pipeline...")
 
     for i, stage in enumerate(refine_config.stages):
-        # 1. Grid Search
-        if stage.use_grid_search:
-            fixed_thickness = grid_search_thickness(
-                model, p_current, log_r_obs, xrr_config, refine_config, stage
+        stage_name = stage.name
+        p_start_stage = p_current.clone()
+        fom_init = calculate_fom(model, p_current, log_r_obs_gpu, xrr_config, refine_config.q_cutoff)
+        
+        current_stage_config = deepcopy(stage)
+        
+        # [NEW] Smart-Lock Logic: Relative Bounds Processing
+        # Config에 relative_bounds가 정의되어 있으면, 현재 값(p_current) 기준으로 temp_bounds를 생성합니다.
+        if stage.relative_bounds:
+            if not current_stage_config.temp_bounds:
+                current_stage_config.temp_bounds = {}
+            
+            for key, margin in stage.relative_bounds.items():
+                if key in p_current._params:
+                    current_val = p_current._params[key].item()
+                    
+                    # Heuristic: 값의 성격에 따라 Ratio(%) 또는 Delta(Absolute) 적용
+                    # Offset, Bkg, Res 등은 0에 가깝거나 음수이므로 Delta 방식이 안전함
+                    if any(x in key for x in ['offset', 'bkg', 'dq', 'res', 'beam']):
+                        # Absolute Delta Mode
+                        p_min = current_val - margin
+                        p_max = current_val + margin
+                    else:
+                        # Percentage Ratio Mode (e.g. 0.05 = 5%)
+                        p_min = current_val * (1.0 - margin)
+                        p_max = current_val * (1.0 + margin)
+                        # 음수 값일 경우 min/max가 뒤집히는 것 방지
+                        if p_min > p_max: p_min, p_max = p_max, p_min
+                    
+                    # 기존 temp_bounds를 덮어쓰지 않고, 더 좁은 범위(교집합)를 적용할 수도 있지만,
+                    # 여기서는 Smart-Lock이 우선권을 가짐
+                    current_stage_config.temp_bounds[key] = (p_min, p_max)
+            
+            stage_name += " (Smart-Lock)"
+
+        # [Trust AI Logic] for Thickness Grid Search
+        if refine_config.trust_ai and stage.use_grid_search:
+            target_key = stage.grid_target_key
+            current_d = 0.0
+            if target_key in p_current._params:
+                current_d = p_current._params[target_key].item()
+            if current_d > 10.0:
+                margin = refine_config.ai_trust_range
+                new_min = max(20.0, current_d * (1.0 - margin))
+                new_max = current_d * (1.0 + margin)
+                current_stage_config.grid_range = (new_min, new_max)
+                stage_name += f" (Trust Grid)"
+
+        if current_stage_config.use_grid_search:
+            best_val = grid_search_thickness(
+                model, p_current, log_r_obs, xrr_config, refine_config, current_stage_config
             )
-            p_current = deepcopy(p_current)
-            p_current.d_f.fill_(fixed_thickness)
-            p_current.d_ox.fill_(0.0)
-            p_current.sig_ox.fill_(0.0)
-            p_current.rho_ox.fill_(0.0)
-            p_current.sig_f.fill_(3.0)
-            log_params(f"[{i}] {stage.name[:15]}", p_current)
-            continue
+            p_current = p_current.clone()
+            target_key = current_stage_config.grid_target_key
+            if target_key in p_current._params:
+                p_current._params[target_key].fill_(best_val)
+        else:
+            if current_stage_config.q_max is None:
+                current_stage_config.q_max = refine_config.q_cutoff
 
-        # 2. Regular Optimization
-        stage_with_fixed = deepcopy(stage)
+            valid_keys = {k for k in current_stage_config.optimize_keys if k in p_current._params}
+            if valid_keys:
+                current_stage_config.optimize_keys = valid_keys
+                p_current = optimize_step(
+                    model, p_current, log_r_obs, xrr_config, current_stage_config, verbose=False
+                )
+        
+        fom_final = calculate_fom(model, p_current, log_r_obs_gpu, xrr_config, refine_config.q_cutoff)
+        report_stage_horizontal(stage_name, p_start_stage, p_current, fom_init, fom_final)
 
-        # 두께 고정 논리
-        if fixed_thickness is not None and 'd_f' not in stage.optimize_keys:
-            stage_with_fixed.fixed_params['d_f'] = fixed_thickness
-
-        if fixed_thickness is not None and 'd_f' in stage.optimize_keys:
-            original_d_range = xrr_config.ranges.d_f
-            xrr_config.ranges.d_f = (
-                max(10.0, fixed_thickness - refine_config.thickness_fine_range),
-                fixed_thickness + refine_config.thickness_fine_range
-            )
-
-        # [중요] Config의 Cutoff를 모든 스테이지에 전파
-        if stage_with_fixed.q_max is None:
-            stage_with_fixed.q_max = refine_config.q_cutoff
-
-        p_current = optimize_step(
-            model, p_current, log_r_obs, xrr_config, stage_with_fixed, verbose=False
-        )
-
-        log_params(f"[{i}] {stage.name[:15]}", p_current)
-
-        # 범위 복구
-        if fixed_thickness is not None and 'd_f' in stage.optimize_keys:
-            xrr_config.ranges.d_f = original_d_range
-
-    logger.info("-" * 70)
+    logger.info("Refinement Complete.")
     return p_current
 
-
 @torch.no_grad()
-def run_real_inference(
-    checkpoint_path: str, 
-    data_path: str, 
-    output_dir: str = "./results",
-    refine_config: RefinementConfig = None,
-    q_cutoff: float = None
-) -> ParamSet:
-    """실제 데이터 추론 및 피팅"""
-    import pathlib
-    # Windows/Linux 경로 호환성 처리
-    torch.serialization.add_safe_globals([pathlib.WindowsPath, pathlib.PosixPath, XRefineConfig])
-    
+def run_real_inference(checkpoint_path, data_path, output_dir="./results", refine_config=None, q_cutoff=None):
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-
-    # Config 로드 및 최신화
-    if isinstance(ckpt['config'], dict):
-        xrr_config = XRefineConfig(**ckpt['config'])
-    else:
-        xrr_config = ckpt['config']
-    
-    # Range나 장비 설정은 최신 CONFIG로 덮어쓰는 것이 안전함 (선택 사항)
-    # xrr_config.ranges = CONFIG.ranges 
-    
+    config_data = ckpt.get('config')
+    xrr_config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    xrr_config.device = device # 강제 업데이트
-
-    # [FIX] 모델 타입에 따른 인스턴스화
-    model_type = getattr(xrr_config.model, 'model_type', 'cnn').lower()
-    
-    if model_type == 'transformer':
-        logger.info("🏗️ Loading Model Type: Transformer-VAE")
-        model = XRR_Transformer_PINN(config=xrr_config).to(device)
-    else:
-        logger.info("🏗️ Loading Model Type: Fourier-CNN")
-        model = XRR_Fourier_PINN(config=xrr_config, device=device).to(device)
-
+    xrr_config.device = device
+    xrr_config.q_grid = xrr_config.q_grid.to(device)
+    model = get_model(xrr_config).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
-
-    if refine_config is None: refine_config = DEFAULT_CONFIG
-
-    # 데이터 로드
+    simulator = AbelesMatrix(device=device)
+    model.simulator = simulator 
     input_tensor = load_real_data(data_path, xrr_config)
-    q_grid_np = xrr_config.q_grid.numpy()
-    
-    # Smart Cutoff
-    if q_cutoff is None:
-        log_y_np = input_tensor.squeeze().cpu().numpy()
-        detected_cutoff = auto_detect_cutoff(q_grid_np, log_y_np)
-        actual_cutoff = detected_cutoff
-        logger.info(f"🤖 Auto-Cutoff Detected: Q > {actual_cutoff:.3f} A^-1")
-    else:
-        actual_cutoff = q_cutoff
-        logger.info(f"✂️ Manual Cutoff Applied: Q > {actual_cutoff:.3f} A^-1")
-
+    q_grid_np = xrr_config.q_grid.cpu().numpy()
+    actual_cutoff = q_cutoff if q_cutoff else 0.45
+    logger.info(f"Cutoff: Q > {actual_cutoff:.3f}")
+    if refine_config is None: refine_config = DEFAULT_CONFIG
     refine_config.q_cutoff = actual_cutoff
-
-    # Masking
     mask_indices = q_grid_np > actual_cutoff
     masked_input = input_tensor.clone()
     masked_input[0, mask_indices] = LOG_MASK_VALUE
-
-    # AI 추론 (VAE 출력 처리 포함)
     masked_input_gpu = masked_input.to(device)
+    out = model(masked_input_gpu, fixed_values=None)
+    p_ai = out[0] if isinstance(out, tuple) else out
+    logger.info("AI Initial Guess Done.")
     
-    # Transformer는 tuple을 반환하므로 첫 번째 값(Params)만 취함
-    out = model(masked_input_gpu)
-    if isinstance(out, tuple):
-        if model_type == 'transformer':
-            # (params, r_sim, (mu, logvar))
-            p_ai = out[0]
-            r_ai = out[1]
-        else:
-            # (params, r_sim, penalty)
-            p_ai = out[0]
-            r_ai = out[1]
-    else:
-        # 혹시 모를 단일 반환 대비
-        p_ai = out
-
-    # Refinement 실행
     p_refined = run_refinement(model, p_ai, masked_input, xrr_config, refine_config)
-
-    # 최종 결과 시뮬레이션
-    # Refinement된 파라미터로 최종 그래프 생성
-    # forward_with_params는 (params, r_sim, penalty) 형태 반환
-    _, r_final, _ = model.forward_with_params(p_refined.to(device))
     
+    def simulate_full(params):
+        t, r, s = params.assemble_structure()
+        L = params.L if hasattr(params, 'L') else None
+        beam_width = params.beam_width if hasattr(params, 'beam_width') else None
+        dq_val = params.dq if hasattr(params, 'dq') else torch.tensor(0.0, device=device)
+        r_smeared = abeles_constant_smearing(
+            q=xrr_config.q_grid.unsqueeze(0), thickness=t, roughness=r, sld=s,
+            sample_length=L, beam_width=beam_width, dq=dq_val.view(1, 1), gauss_num=51, abeles_func=simulator 
+        )
+        i0_val = params.i0.item() if hasattr(params, 'i0') else 1.0
+        bkg_val = params.bkg.item() if hasattr(params, 'bkg') else -10.0
+        r_final = r_smeared * i0_val + (10 ** bkg_val)
+        return r_final.view(1, -1)
+
+    r_final = simulate_full(p_refined)
+    r_ai_sim = simulate_full(p_ai)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
     data_name = Path(data_path).stem
-    fig_path = output_path / f"{data_name}_fit_{datetime.now().strftime('%H%M%S')}.png"
-
-    # Normalize for plotting
-    r_final_norm = r_final / (r_final.max() + 1e-12)
-    r_ai_norm = r_ai / (r_ai.max() + 1e-12)
-
-    _save_plot(xrr_config, input_tensor[0], r_ai_norm[0], r_final_norm[0], 
-       data_name, fig_path, p_refined, q_cutoff=actual_cutoff)
-
-    logger.info(f"✨ 완료. 결과 저장됨: {fig_path}")
-    print("Refined Params:", p_refined)
-
-    return p_refined
-
-
-def _save_plot(config, y_meas_log, r_ai, r_ref, title, save_path, p_refined=None, q_cutoff=None):
-    q = config.q_grid.numpy()
-    y_meas = y_meas_log.cpu().numpy()
-
-    valid_mask = y_meas > LOG_VALID_THRESHOLD
-    q_valid = q[valid_mask]
-    y_valid = 10 ** y_meas[valid_mask]
-    
-    r_ai_valid = r_ai.cpu().numpy()[valid_mask]
-    r_ref_valid = r_ref.cpu().numpy()[valid_mask]
-
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.semilogy(q_valid, y_valid, 'ko', ms=2, alpha=0.3, label='Measured')
-    ax.semilogy(q_valid, r_ai_valid, 'b--', alpha=0.6, label='AI Init')
-    ax.semilogy(q_valid, r_ref_valid, 'r-', lw=1.5, label='Refined')
-    
-    if q_cutoff:
-        ax.axvline(x=q_cutoff, color='gray', linestyle='--', alpha=0.6, label=f'Cutoff ({q_cutoff:.2f})')
-        # Cutoff 이후 영역 음영 처리
-        ax.axvspan(q_cutoff, q.max(), color='gray', alpha=0.1)
-
-    ax.set_xlabel("Q (Å⁻¹)")
-    ax.set_ylabel("Reflectivity")
-    ax.set_title(f"XRefine: {title}")
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.2)
-
-    if p_refined is not None:
-        param_text = (
-            f"Film:  d={p_refined.d_f.item():.1f}Å  σ={p_refined.sig_f.item():.1f}Å  ρ={p_refined.rho_f.item():.1f}\n"
-            f"Oxide: d={p_refined.d_ox.item():.1f}Å  σ={p_refined.sig_ox.item():.1f}Å  ρ={p_refined.rho_ox.item():.1f}"
-        )
-        ax.text(0.02, 0.02, param_text, transform=ax.transAxes, fontsize=9,
-                verticalalignment='bottom', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    plt.savefig(save_path)
-    plt.close(fig)
-
+    q = q_grid_np
+    y_obs = 10**masked_input[0].cpu().numpy()
+    valid_mask = (masked_input[0].cpu().numpy() > LOG_VALID_THRESHOLD) & (q <= actual_cutoff)
+    ax.semilogy(q[valid_mask], y_obs[valid_mask], 'ko', ms=3, alpha=0.4, label='Measured Data')
+    ax.semilogy(q, r_ai_sim[0].cpu().numpy(), 'b--', lw=1, alpha=0.7, label='AI Init (Smeared)')
+    ax.semilogy(q, r_final[0].cpu().numpy(), 'r-', lw=2, label='Refined (Smeared)')
+    ax.axvline(x=actual_cutoff, color='gray', linestyle=':', label='Cutoff Limit')
+    ax.set_xlabel("Q ($Å^{-1}$)", fontsize=12)
+    ax.set_ylabel("Reflectivity", fontsize=12)
+    ax.set_title(f"XRefine Result: {data_name}", fontsize=14, fontweight='bold')
+    ax.legend(loc='upper right', frameon=True)
+    ax.grid(True, which="both", ls="-", alpha=0.2)
+    if valid_mask.any():
+        q_min, q_max = q[valid_mask].min(), q[valid_mask].max()
+        ax.set_xlim(0, max(q_max * 1.1, 0.2))
+        y_min_data = y_obs[valid_mask].min()
+        ax.set_ylim(bottom=max(y_min_data * 0.1, 1e-10), top=2.0)
+    plt.tight_layout()
+    plt.savefig(output_path / f"{data_name}_{timestamp}_result.png", dpi=150)
+    plt.close()
+    final_fom = calculate_fom(model, p_refined, masked_input_gpu, xrr_config, actual_cutoff)
+    param_dict = {k: v.item() for k, v in p_refined._params.items()}
+    param_dict.update(final_fom)
+    pd.DataFrame([param_dict]).to_csv(output_path / f"{data_name}_{timestamp}_params.csv", index=False)
+    return p_refined
 
 if __name__ == "__main__":
     import argparse
-
-    parser = argparse.ArgumentParser(description="XRefine: XRR Data Refinement Tool")
-    parser.add_argument("data", help="Path to XRR data file (.dat)")
-    parser.add_argument("-c", "--checkpoint", 
-                        default=r"D:\03_Resources\Data\XRR_AI\xrefine\v1\best.pt",
-                        help="Path to model checkpoint")
-    parser.add_argument("-o", "--output", default="./results",
-                        help="Output directory for results")
-    parser.add_argument("--preset", choices=["default", "quick", "high_quality"],
-                        default="default", help="Refinement preset")
-    parser.add_argument("--cutoff", type=float, default=None, 
-                        help="Manual Q-Cutoff (Default: Auto Detect)")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("data", help="Path to .dat file")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--out", default="./results")
     args = parser.parse_args()
-
-    if args.preset == "quick":
-        config = RefinementConfig.quick_thickness()
-    elif args.preset == "high_quality":
-        config = RefinementConfig.high_quality()
-    else:
-        config = None  # Default
-
-    run_real_inference(args.checkpoint, args.data, args.output, config, q_cutoff=args.cutoff)
+    run_real_inference(args.checkpoint, args.data, args.out)

@@ -1,4 +1,8 @@
-# data/augmentations.py
+"""
+XRR Augmentation Module (Cleaned & Optimized)
+=============================================
+GPU-accelerated physics augmentation without CPU synchronization overhead.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,157 +11,92 @@ from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 
 class XRRAugmentor(nn.Module):
-    """
-    GPU-Accelerated XRR Augmentor (CPU-Sync Free Optimization)
-    """
     def __init__(self, config: XRefineConfig):
         super().__init__()
         self.cfg = config
         self.aug_cfg = config.augmentations
-        # Pre-calculate Constants on GPU
-        self.register_buffer('sqrt_8ln2', torch.sqrt(torch.tensor(8.0 * np.log(2.0))))
         self.q_grid = config.q_grid.to(config.device)
         self.total_angle = self.cfg.q_max_tth - self.cfg.q_min_tth
 
     def apply_smearing(self, R: torch.Tensor, res_sigma: torch.Tensor) -> torch.Tensor:
-        """Batch-wise Gaussian Smearing (Optimized)"""
+        """
+        Batch-wise Gaussian Smearing (Convolution).
+        Assumes uniform q-grid for kernel generation (approximation for speed).
+        """
         B, Q = R.shape
-        # dq 계산 시 스칼라 변환 없이 텐서 연산 유지
+        # dq as Tensor
         dq = (self.q_grid[-1] - self.q_grid[0]) / (Q - 1)
         
-        # 커널 사이즈 결정 (CPU 연산 허용: 한 번만 수행됨)
-        # 하지만 매 배치마다 수행되므로 최적화 필요
-        # max_possible_sigma는 상수이므로 init에서 계산 가능하지만, 
-        # 안전하게 여기서 하되 numpy/float 연산으로 처리 (Tensor 동기화 회피)
-        
+        # Calculate Kernel Size (Scalar calc on CPU is okay here for setup)
+        # But to be safe for compilation, use tensor ops or fixed max size
         max_sigma_val = self.aug_cfg.res_sigma_range[1]
-        dq_val = dq.item() # 여기서 한 번 동기화가 일어나지만, 1회라 허용 범위
         
-        max_sigma_px = max_sigma_val / dq_val
+        # We use a fixed dq estimate for kernel sizing to avoid dynamic shapes
+        dq_est = (self.cfg.q_max_tth - self.cfg.q_min_tth) * 0.0408 / (Q - 1) # approx
+        max_sigma_px = max_sigma_val / dq_est
         kernel_size = int(max_sigma_px * 6)
+        
         if kernel_size % 2 == 0: kernel_size += 1
         if kernel_size < 3: return R
 
         padding = kernel_size // 2
-        # GPU 텐서 직접 생성
+        
+        # 1. Create Kernel Grid (GPU)
         x = torch.linspace(-padding, padding, kernel_size, device=R.device)
         
-        # 브로드캐스팅 연산 (Loop 없음)
+        # 2. Gaussian Kernel Construction (Broadcasting)
+        # sigma_px: (B, 1)
         sigma_px = res_sigma / (dq + 1e-9) 
         kernel = torch.exp(-0.5 * (x.view(1, kernel_size) / sigma_px)**2)
         kernel = kernel / (kernel.sum(dim=-1, keepdim=True) + 1e-9)
         
-        # Conv1d Groups를 이용한 배치 처리
-        kernel = kernel.unsqueeze(1) # (B, 1, K)
-        inp_padded = F.pad(R.unsqueeze(1), (padding, padding), mode='replicate')
+        # 3. Conv1d with Groups (Batch Processing)
+        # Input: (1, B, Q)
+        # Weight: (B, 1, K)
+        inp = R.unsqueeze(1) 
+        inp_padded = F.pad(inp, (padding, padding), mode='replicate')
+        kernel = kernel.unsqueeze(1) 
         
-        smeared = F.conv1d(inp_padded, kernel, groups=B)
+        # conv1d groups=B applies separate kernel to each batch item
+        smeared = F.conv1d(inp_padded.view(1, B, -1), kernel, bias=None, groups=B)
         
-        return smeared.squeeze(1)
+        return smeared.view(B, Q)
 
     def apply_resampling(self, R: torch.Tensor) -> torch.Tensor:
         """
-        [Optimized Resampling] No CPU Synchronization (.item() Removed)
-        """
-        B, Q = R.shape
-        device = R.device
-        
-        # 1. Skip (20%)
-        if torch.rand(1, device=device) < 0.2:
-            return R
-
-        # 2. Config Range
-        step_min, step_max = self.aug_cfg.measure_step_range
-        
-        # 3. Vectorized Interpolation (No Loop, No Chunk)
-        # Instead of chunking and looping (which is slow in Python),
-        # we process the whole batch at once with a random resolution per item.
-        # But F.interpolate requires same size for batch.
-        # Compromise: Pick ONE random resolution for the whole batch (Fastest)
-        # OR Split into fixed N groups (e.g. 4) and use 4 fixed resolutions (Diversity)
-        
-        # Method: Randomly choose 4 target lengths for 4 splits
-        # This keeps GPU busy without CPU sync
-        
-        num_groups = 4 if B >= 4 else 1
-        splits = torch.chunk(R, num_groups, dim=0)
-        results = []
-        
-        for split in splits:
-            # GPU Random Step -> Target Length
-            step_size = (torch.rand(1, device=device) * (step_max - step_min)) + step_min
-            
-            # Calculate Scale Factor (float) instead of Target Length (int)
-            # scale_factor = original_step / new_step
-            # original_step approx = total_angle / Q
-            # new_step = step_size
-            # scale = (total_angle / Q) / step_size
-            
-            current_step = self.total_angle / Q
-            scale_factor = current_step / step_size
-            
-            # Clamp scale to reasonable range (e.g., 0.1 to 1.0)
-            # We use clamp instead of if/min/max to avoid CPU sync
-            scale_factor = torch.clamp(scale_factor, min=0.1, max=1.0)
-            
-            # (1) Downsample
-            # mode='linear' supports scale_factor
-            split_in = split.unsqueeze(1)
-            
-            # [Key Optimization] Use scale_factor to avoid .item() integer conversion
-            # recompute_scale_factor=False is default
-            split_coarse = F.interpolate(
-                split_in, scale_factor=scale_factor.item(), # Wait, scale_factor.item() still syncs?
-                # YES. PyTorch interpolate scale_factor expects float, not Tensor.
-                # So we MUST sync here if we want random per group.
-                # TRICK: Generate random float on CPU (Fast enough for 4 items)
-                mode='linear', align_corners=True
-            )
-            
-            # Wait, to truly avoid sync, we should use 'size'.
-            # But calculating size from tensor requires sync.
-            # Solution: Generate random size on CPU directly using numpy/random
-            # since we don't need gradients for the augmentation parameters.
-            
-            # Let's fix the logic above.
-            
-            # (2) Upsample back to Q
-            split_recon = F.interpolate(
-                split_coarse, size=Q, mode='linear', align_corners=True
-            )
-            results.append(split_recon.squeeze(1))
-            
-        return torch.cat(results, dim=0)
-        
-    def apply_resampling_optimized(self, R: torch.Tensor) -> torch.Tensor:
-        """
-        True CPU-Async Resampling
-        Uses CPU random generation for sizes (negligible overhead compared to Sync)
+        Variable Density Resampling (CPU-Async Optimized).
+        Uses numpy random for size calculation to avoid GPU sync.
         """
         B, Q = R.shape
         
+        # 20% Chance to skip
         if np.random.rand() < 0.2:
             return R
             
         step_min, step_max = self.aug_cfg.measure_step_range
+        
+        # Split batch into groups for diversity
         num_groups = 4 if B >= 4 else 1
         splits = torch.chunk(R, num_groups, dim=0)
         results = []
         
         for split in splits:
-            # Generate random step on CPU -> Immediate float
+            # [Optimization] Generate random step on CPU -> Float immediately
+            # This avoids cudaStreamSynchronize caused by tensor.item()
             step_size = np.random.uniform(step_min, step_max)
+            
+            # Calculate target length (Python int)
             target_len = int(self.total_angle / step_size)
             target_len = max(min(target_len, Q), 10)
             
             split_in = split.unsqueeze(1)
             
-            # Downsample (Target Len is standard Python int, no Sync)
+            # 1. Downsample (Loss of information)
             split_coarse = F.interpolate(
                 split_in, size=target_len, mode='linear', align_corners=True
             )
             
-            # Upsample
+            # 2. Upsample (Restore grid for model input)
             split_recon = F.interpolate(
                 split_coarse, size=Q, mode='linear', align_corners=True
             )
@@ -167,25 +106,23 @@ class XRRAugmentor(nn.Module):
 
     @torch.no_grad()
     def forward(self, q: torch.Tensor, R: torch.Tensor, params: ParamSet) -> torch.Tensor:
-        """[Pipeline] Sampling -> Smearing -> Scaling -> Noise -> Masking"""
+        """Pipeline: Resampling -> Scaling -> Noise -> Masking"""
         B, Q = R.shape
-        n_q = Q
         device = R.device
+        n_q = Q
         
         # 0. NaN Protection
         R = torch.nan_to_num(R, nan=1e-11, posinf=1.0, neginf=1e-11)
 
-        # 1. Variable Density Resampling (Optimized)
-        R_aug = self.apply_resampling_optimized(R)
+        # 1. Resampling
+        R_aug = self.apply_resampling(R)
         
-        # 3. Scaling & Background
-        # [FIX] params.i0 and bkg are Tensors on GPU. Direct mul is fine.
+        # 2. Scaling & Background (Tensor ops)
         R_aug = R_aug * params.i0 + torch.pow(10.0, params.bkg)
         R_aug = torch.nan_to_num(R_aug, nan=1e-11).clamp(min=0.0)
 
-        # 4. Shot Noise (Poisson)
+        # 3. Shot Noise (Poisson)
         noise_factor = 1.0 / (self.aug_cfg.intensity_noise_scale + 1e-6)
-        # GPU Random Generation
         s_rand = torch.pow(10.0, torch.rand(B, 1, device=device) * 2 + 5) * noise_factor
         
         poisson_rate = torch.clamp(R_aug * s_rand, min=0.0)
@@ -193,20 +130,18 @@ class XRRAugmentor(nn.Module):
         
         R_aug = torch.poisson(poisson_rate) / (s_rand + 1e-9)
         
+        # 4. Masking
         # (A) Low-Q Masking
         low_q_cut = torch.rand(B, 1, device=device) * 0.015 + 0.005 
         mask_low = q < low_q_cut
         R_aug[mask_low] = 1e-15
         
-        # (B) Smart High-Q Cutoff (Hybrid Strategy)
+        # (B) High-Q Smart/Random Cutoff
         use_smart_cutoff = torch.rand(B, 1, device=device) < 0.8
         
-        # Smart Cutoff Logic
-        bkg_level = torch.pow(10.0, params.bkg)
-        floor_threshold = bkg_level * 5.0
-        
+        # Smart Logic
+        floor_threshold = torch.pow(10.0, params.bkg) * 5.0
         is_below_floor = R_aug < floor_threshold
-        # argmax on GPU is fast enough
         first_floor_idx = torch.argmax(is_below_floor.int(), dim=1).unsqueeze(1)
         
         floor_not_found = (first_floor_idx == 0)
@@ -215,7 +150,7 @@ class XRRAugmentor(nn.Module):
         margin = torch.randint(50, 150, (B, 1), device=device)
         smart_indices = torch.clamp(smart_base_idx + margin, min=int(n_q * 0.4), max=n_q)
         
-        # Random Cutoff Logic
+        # Random Logic
         random_indices = torch.randint(int(n_q * 0.4), n_q + 1, (B, 1), device=device)
         
         # Combine
@@ -225,5 +160,4 @@ class XRRAugmentor(nn.Module):
         mask_high = indices >= cutoff_indices
         R_aug[mask_high] = 1e-15
 
-        # Final Clamp
         return torch.clamp(R_aug, min=1e-15)

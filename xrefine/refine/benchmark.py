@@ -1,204 +1,138 @@
 """
-XRefine Benchmark
-=================
-합성 데이터 기반 Refinement 정확도 벤치마크
-
-Usage:
-    uv run python -m xrefine.refine.benchmark
-    
-    또는 파이썬 코드에서:
-    from xrefine.refine.benchmark import run_benchmark
-    run_benchmark(checkpoint_path, target_params={"d_f": 400}, n_random=5)
+Refinement Benchmark (Updated for Dynamic Params)
+=================================================
 """
 import torch
-import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Dict, Optional
 
-from xrefine.config import CONFIG, XRefineConfig
-from xrefine.models import XRR_Fourier_PINN
+from xrefine.config import XRefineConfig
+from xrefine.models import get_model
 from xrefine.core.structures import ParamSet
+from xrefine.core.abeles import AbelesMatrix
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.logger import logger
-
-from xrefine.refine.config import RefinementConfig
 from xrefine.refine.pipeline import run_refinement
-
+from xrefine.refine.config import DEFAULT_CONFIG
 
 def run_benchmark(
     checkpoint_path: str,
     target_params: Optional[Dict[str, float]] = None,
-    n_random: int = 0,
-    refine_config: RefinementConfig = None,
+    n_random: int = 3,
     save_dir: str = "./benchmark_results"
 ):
-    """
-    합성 데이터 기반 Refinement 벤치마크
+    # 1. Load Setup
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    config_data = ckpt.get('config')
+    if isinstance(config_data, dict):
+        config = XRefineConfig(**config_data)
+    else:
+        config = config_data
+        
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    config.device = device
+    config.q_grid = config.q_grid.to(device)
     
-    Args:
-        checkpoint_path: 모델 체크포인트 경로
-        target_params: 사용자 지정 파라미터 (선택)
-        n_random: 랜덤 테스트 케이스 수
-        refine_config: Refinement 설정 (None = 기본값)
-        save_dir: 결과 저장 디렉토리
-    """
-    # 1. Load Model & Config
-    import pathlib
-    temp = pathlib.PosixPath
-    pathlib.PosixPath = pathlib.WindowsPath
-    try:
-        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    finally:
-        pathlib.PosixPath = temp
-    
-    # [FIXED] 체크포인트 config를 그대로 사용 (ranges 포함)
-    config = XRefineConfig(**ckpt['config'])
-    
-    model = XRR_Fourier_PINN(config=config).to(config.device)
+    model = get_model(config).to(device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
     
+    simulator = AbelesMatrix(device=device)
+    # Inject simulator for optimize_step fallback
+    model.simulator = simulator 
+
     save_path = Path(save_dir)
     save_path.mkdir(exist_ok=True, parents=True)
-    
-    q_grid = config.q_grid.to(config.device)
-    
-    # 2. Define Test Cases
+
+    # 2. Generate Cases
     test_cases = []
     
-    # (A) User-specified Case
+    # (A) Manual Case
     if target_params:
-        _, p_rand = generate_synthetic_batch(1, q_grid, config)
+        # Generate random base then override
+        _, p_base = generate_synthetic_batch(1, config.q_grid, config, simulator)
         
+        # Override values
         for k, v in target_params.items():
-            if hasattr(p_rand, k):
-                getattr(p_rand, k).fill_(v)
+            if k in p_base._params:
+                p_base._params[k].fill_(v)
+                
+        # Simulate R
+        t, r, s = p_base.assemble_structure()
+        r_sim = simulator(config.q_grid, t, r, s)
         
-        # Generate R for these params
-        _, r_sim, _ = model.forward_with_params(p_rand)
-        r_noisy = r_sim * (1 + 0.1 * torch.randn_like(r_sim))
-        r_noisy_norm = r_noisy / (r_noisy.max() + 1e-12)
-        log_r = torch.log10(torch.clamp(r_noisy_norm, min=1e-12))
+        # Add Noise
+        r_noisy = r_sim * (1 + 0.05 * torch.randn_like(r_sim))
+        log_r = torch.log10(torch.clamp(r_noisy, min=1e-12))
         
-        test_cases.append(("User_Spec", p_rand, log_r))
-    
+        test_cases.append(("Manual", p_base, log_r))
+
     # (B) Random Cases
     if n_random > 0:
-        r_batch, p_batch = generate_synthetic_batch(n_random, q_grid, config)
-        r_batch_norm = r_batch / (r_batch.max(dim=1, keepdim=True)[0] + 1e-12)
-        log_r_batch = torch.log10(torch.clamp(r_batch_norm, min=1e-12))
+        r_batch, p_batch = generate_synthetic_batch(n_random, config.q_grid, config, simulator)
+        log_r_batch = torch.log10(torch.clamp(r_batch, min=1e-12))
         
         for i in range(n_random):
-            p_single = {}
-            for k, v in p_batch.items():
-                val = getattr(p_batch, k)
-                p_single[k] = val[i].view(1, -1)
-            
-            p_obj = ParamSet(**p_single)
-            r_obj = log_r_batch[i].view(1, -1)
-            test_cases.append((f"Random_{i+1}", p_obj, r_obj))
-    
-    if not test_cases:
-        logger.warning("No test cases defined.")
-        return
-    
+            # Extract single item ParamSet
+            single_dict = {k: v[i:i+1] for k, v in p_batch._params.items()}
+            p_single = ParamSet(single_dict, p_batch.layer_names, device)
+            r_single = log_r_batch[i:i+1]
+            test_cases.append((f"Random_{i}", p_single, r_single))
+
     # 3. Run Benchmark
-    logger.info(f"🚀 Starting Benchmark ({len(test_cases)} cases)...")
-    
-    all_errors = {}
-    
-    for name, p_true, log_r_obs in test_cases:
-        logger.info(f"\n{'='*50}")
-        logger.info(f"📦 Benchmark Case: {name}")
-        logger.info(f"{'='*50}")
+    for name, p_true, log_r in test_cases:
+        logger.info(f"📦 Benchmarking: {name}")
         
-        # AI Initial Guess
-        with torch.no_grad():
-            p_ai, _, _ = model(log_r_obs)
+        # AI Guess
+        out = model(log_r, fixed_values=None)
+        p_ai = out[0] if isinstance(out, tuple) else out
         
-        # Run Refinement (using new module)
-        p_refined = run_refinement(model, p_ai, log_r_obs, config, refine_config)
+        # Refine
+        p_ref = run_refinement(model, p_ai, log_r, config, DEFAULT_CONFIG)
         
-        # Compare
-        errors = {}
-        key_params = ['d_f', 'sig_f', 'rho_f', 'd_ox', 'sig_ox', 'rho_ox']
+        # Compare (Target Film only for brevity)
+        t_thick = p_true._params['Target_Film.thickness'].item()
+        p_thick = p_ref._params['Target_Film.thickness'].item()
+        err = abs(p_thick - t_thick) / t_thick * 100
         
-        for k in key_params:
-            t = getattr(p_true, k).item()
-            p = getattr(p_refined, k).item()
-            err_percent = (p - t) / (abs(t) + 1e-9) * 100
-            errors[k] = (t, p, err_percent)
-        
-        # Print Results (key params only)
-        logger.info(f"\n📊 Result:")
-        logger.info(f"{'Param':<10} {'True':>10} {'Pred':>10} {'Error':>10}")
-        logger.info("-" * 42)
-        for k, (t, p, e) in errors.items():
-            err_str = f"{e:+.1f}%" if abs(e) < 100 else f"{'✗':>10}"
-            logger.info(f"{k:<10} {t:>10.1f} {p:>10.1f} {err_str:>10}")
-        
-        all_errors[name] = errors
+        logger.info(f"Result: True={t_thick:.1f}, Refined={p_thick:.1f}, Err={err:.2f}%")
         
         # Plot
-        _, r_true, _ = model.forward_with_params(p_true)
-        _, r_pred, _ = model.forward_with_params(p_refined)
+        t, r, s = p_ref.assemble_structure()
+        r_final = simulator(config.q_grid, t, r, s)
         
-        fig, ax = plt.subplots(figsize=(10, 6))
+        plt.figure(figsize=(8,5))
         q = config.q_grid.cpu().numpy()
-        obs_np = log_r_obs.detach().cpu().numpy().flatten()
-        true_np = r_true.detach().cpu().numpy().flatten()
-        pred_np = r_pred.detach().cpu().numpy().flatten()
-        
-        ax.semilogy(q, 10**obs_np, 'ko', ms=2, alpha=0.3, label='Observed (Noisy)')
-        ax.semilogy(q, true_np, 'g--', lw=1.5, label='Ground Truth')
-        ax.semilogy(q, pred_np, 'r-', lw=1.5, label='Refined Fit')
-        ax.set_xlabel("Q (Å⁻¹)")
-        ax.set_ylabel("Reflectivity")
-        ax.set_title(f"Benchmark: {name}")
-        ax.legend()
-        ax.grid(True, alpha=0.2)
-        
-        # Add param text
-        param_text = (
-            f"True:  d={p_true.d_f.item():.0f}Å  σ={p_true.sig_f.item():.1f}Å\n"
-            f"Pred:  d={p_refined.d_f.item():.0f}Å  σ={p_refined.sig_f.item():.1f}Å"
-        )
-        ax.text(0.02, 0.02, param_text, transform=ax.transAxes, fontsize=9,
-                verticalalignment='bottom', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-        
-        plt.savefig(save_path / f"{name}.png", dpi=150)
+        plt.semilogy(q, 10**log_r[0].cpu().numpy(), 'k.', alpha=0.3)
+        plt.semilogy(q, r_final[0].detach().cpu().numpy(), 'r-')
+        plt.title(f"{name}: Err {err:.1f}%")
+        plt.savefig(save_path / f"{name}.png")
         plt.close()
-    
-    logger.info(f"\n✅ Benchmark Complete. Results saved to: {save_path}")
-    return all_errors
-
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="XRefine Benchmark Tool")
-    parser.add_argument("-c", "--checkpoint",
-                        default=r"D:\03_Resources\Data\XRR_AI\xrefine\v1\best.pt",
-                        help="Model checkpoint path")
-    parser.add_argument("-n", "--n_random", type=int, default=3,
-                        help="Number of random test cases")
-    parser.add_argument("-o", "--output", default="./benchmark_results",
-                        help="Output directory")
-    
+    parser.add_argument("-c", "--checkpoint", required=True, help="Model checkpoint path")
+    parser.add_argument("-n", "--n_random", type=int, default=3, help="Number of random test cases")
+    parser.add_argument("-o", "--output", default="./benchmark_results", help="Output directory")
+
     args = parser.parse_args()
-    
-    # Example manual case
+
+    # [UPDATE] 복소수(흡수율)가 포함된 테스트 케이스 정의
+    # 키 이름은 config.yaml의 레이어 이름과 일치해야 함 (동적 파라미터 구조 반영)
     manual_case = {
-        'd_f': 354,
-        'd_ox': 18.3,
-        'sig_f': 5.0,
-        'sig_ox': 4.4,
-        'rho_f': 49.6,
-        'rho_ox': 14.1,
+        'Target_Film.thickness': 354.0,
+        'Target_Film.roughness': 5.0,
+        'Target_Film.sld': 49.6,
+        'Target_Film.sld_imag': 2.5,  # [New] 흡수율 테스트
+        
+        'Top_Layer.thickness': 18.3,
+        'Top_Layer.sld': 14.1,
+        'Top_Layer.sld_imag': 0.1     # [New] 미세 흡수
     }
-    
+
     run_benchmark(
         args.checkpoint, 
         target_params=manual_case, 
