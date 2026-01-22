@@ -92,7 +92,7 @@ class FourierConvEncoder(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         """
         Args:
-            x: (B, Q_Len)
+            x: (B, Q_Len) or (B, 1, Q_Len)
         Returns:
             (B, Output_Dim)
         """
@@ -100,23 +100,43 @@ class FourierConvEncoder(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(1)
 
-        # [FIX] Intensity Normalization (Sync with ViT logic)
-        # LOG_MASK_VALUE(-15.0) ~ 0.0 범위를 -1.0 ~ 1.0 (또는 0~1)로 정규화
-        # 여기서는 -1 ~ 1 범위로 맞춥니다.
+        # [FIX 2] Global Hint Extraction (Before Normalization)
+        # Log Scale 데이터에서 물리적 특징(높이, 임계각, 기울기) 추출
+        # x shape: (Batch, Channel=1, Length) -> dim=-1 기준 통계
+        
+        # 1. Max Intensity (전체 높이 -> I0, Background 힌트)
+        stat_max = x.max(dim=-1)[0] # (B, 1)
+        
+        # 2. Low-Q Mean (임계각 영역 평균 -> SLD 힌트)
+        # 앞쪽 50개 포인트의 평균 높이
+        stat_low_q = x[..., :50].mean(dim=-1) # (B, 1)
+        
+        # 3. Std Dev (전체 변동성 -> Roughness, Fringe Depth 힌트)
+        stat_std = x.std(dim=-1) # (B, 1)
+        
+        # 합치기: (B, 3)
+        global_stats = torch.cat([stat_max, stat_low_q, stat_std], dim=1)
+
+        # --- 기존 전처리 및 인코더 로직 ---
+        
+        # Intensity Normalization (-1 ~ 1)
         x_norm = (torch.clamp(x, min=LOG_MASK_VALUE, max=0.0) - LOG_MASK_VALUE/2) / (-LOG_MASK_VALUE/2)
 
         if self.use_fourier:
-            # Fourier returns (B, 2M, L)
             fourier_feat = self.fourier(x_norm)
-            # Concatenate along channel dim: (B, 1+2M, L)
             x_in = torch.cat([x_norm, fourier_feat], dim=1)
         else:
             x_in = x_norm
+            
+        # CNN Backbone
+        feat = self.backbone(x_in) # (B, C, L_pooled)
+        feat = self.global_pool(feat).flatten(1) # (B, C) -> (B, Hidden_Dim)
 
-        feat = self.encoder(x_in) # (B, C_last, L_pooled)
-        feat = self.global_pool(feat).squeeze(-1) # (B, C_last)
+        # [FIX 3] Feature Fusion (Conv Feature + Global Hint)
+        # (B, Hidden) + (B, 3) -> (B, Hidden + 3)
+        feat_enriched = torch.cat([feat, global_stats], dim=1)
 
-        return self.regressor(feat)
+        return self.regressor(feat_enriched)
 
 
 @register_model("fourier_conv")
