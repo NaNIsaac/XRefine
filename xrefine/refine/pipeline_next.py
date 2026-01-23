@@ -134,9 +134,10 @@ def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
         x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
 
         # 2. Configurable Normalization via config.data.normalization_mode
-        y_norm = apply_normalization(
+        y_norm, scale = apply_normalization(
             y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth
         )
+        logger.info(f"  [Data] Normalization Scale Factor: {scale:.4e}")
         
         # 3. Log Transform (allow values > 1.0 for noise handling)
         log_y_raw = np.log10(np.maximum(y_norm, 1e-11))

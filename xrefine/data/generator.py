@@ -134,7 +134,18 @@ def generate_synthetic_batch(
     
     # 5. Apply Configurable Normalization (consistent with real data loading)
     from xrefine.data.normalization import apply_normalization_tensor
-    reflectivity = apply_normalization_tensor(reflectivity, q_grid, config)
+    reflectivity, scale = apply_normalization_tensor(reflectivity, q_grid, config)
+    
+    # [DESIGN FIX] Normalization destroys original absolute scale processing.
+    # We must adjust target labels ('i0', 'bkg') to match the normalized data context.
+    if config.data.normalization_mode.lower() != 'none':
+        # 1. Update I0: New_I0 = Old_I0 / Scale
+        if 'i0' in params._params:
+            params._params['i0'] = params._params['i0'] / scale
+            
+        # 2. Update Bkg: New_Bkg = Old_Bkg - log10(Scale)
+        if 'bkg' in params._params:
+            params._params['bkg'] = params._params['bkg'] - torch.log10(scale + 1e-12)
         
     return reflectivity, params
 

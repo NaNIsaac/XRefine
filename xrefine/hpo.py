@@ -111,8 +111,8 @@ def objective(trial: optuna.Trial):
             curr_w = trainer._get_curriculum_weight(epoch)
             
             # Train
-            train_metrics = trainer.train_epoch(epoch, curr_w)
-            if np.isnan(train_metrics.get('loss', float('inf'))):
+            train_loss = trainer.train_epoch(epoch, curr_w)
+            if np.isnan(train_loss):
                 raise optuna.exceptions.TrialPruned("NaN Loss")
 
             # Validate

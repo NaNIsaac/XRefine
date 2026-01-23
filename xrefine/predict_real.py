@@ -53,7 +53,8 @@ def load_real_data(file_path: str, config: XRefineConfig):
     x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
 
     # Configurable Normalization
-    y_norm = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+    y_norm, scale = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+    logger.info(f"  [Predict] Norm Scale: {scale:.4e}")
     log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
 
     # Grid Interpolation
