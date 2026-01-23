@@ -50,50 +50,91 @@ class RefinementConfig:
 
     @staticmethod
     def default_stages() -> List[StageConfig]:
+        """
+        Improved refinement stages for better low-angle and fringe fitting.
         
-        footprint_params = {'tth_offset', 'L', 'i0'} 
-        plateau_params = {'Target_Film.sld', 'Substrate.sld', 'Top_Layer.sld'}
+        Key changes:
+        1. Stage 0: Pre-critical footprint (beam_width, L, tth_offset)
+        2. beam_width is now optimized, not fixed (Critical for low-angle fit!)
+        3. Better separation of physical effects
+        """
+        
+        footprint_params = {'beam_width', 'L', 'tth_offset'}
+        sld_params = {'Target_Film.sld', 'Substrate.sld', 'Top_Layer.sld'}
         shape_params = {
             'Target_Film.roughness', 'Substrate.roughness', 'Top_Layer.roughness',
             'Target_Film.sld_imag', 'Substrate.sld_imag', 'dq'
         }
-        all_params = footprint_params | plateau_params | shape_params | {
-            'Target_Film.thickness', 'Top_Layer.thickness', 'bkg', 'beam_width'
+        all_params = footprint_params | sld_params | shape_params | {
+            'Target_Film.thickness', 'Top_Layer.thickness', 'bkg'
         }
 
         return [
-            # Stage 1~4 동일 (라운드 니, 풋프린트 등 기존 성공 전략 유지)
-            StageConfig(name="1. Scale & Footprint", optimize_keys=footprint_params | {'bkg'}, fixed_params={'beam_width': 0.1}, loss_fn=LINEAR_MSE, q_max=0.05, maxiter=60, popsize=40, temp_bounds={'L': (5.0, 50.0), 'i0': (0.5, 2.0)}),
-            # Stage 2: Roundness (dq, sub_rough) 조기 투입
-            StageConfig(name="2. Anchor SLD & Roundness", optimize_keys=plateau_params | {'dq', 'Substrate.roughness'}, fixed_params={'beam_width': 0.1}, loss_fn=LINEAR_MSE, q_max=0.09, maxiter=60, popsize=40, temp_bounds={'dq': (0.002, 0.03), 'Substrate.roughness': (0.0, 10.0)}),
-            StageConfig(name="3. Fix Thickness", use_grid_search=True, grid_target_key="Target_Film.thickness", fixed_params={'beam_width': 0.1}, loss_fn=CORRELATION, grid_points=300),
-            StageConfig(name="4. Shape (Roughness Only)", optimize_keys=shape_params, fixed_params={'beam_width': 0.1}, loss_fn=LOG_MSE, q_max=0.30, maxiter=100, popsize=40),
-
-            # ---------------------------------------------------------
-            # [Stage 5] Final Polish (Hybrid R1 + LogR2)
-            # ---------------------------------------------------------
-            # Linear(임계각 사수)와 Log(프린지 사수)가 20:1 비율로 교차 검증하며 최적화.
+            # Stage 1: Pre-Critical Footprint (Q < 0.04)
+            # Beam width 최적화가 핵심! (0.1 고정 해제)
             StageConfig(
-                name="5. Final Polish (Hybrid)",
-                optimize_keys=all_params, 
-                loss_fn=HYBRID_LOSS, # [NEW] Hybrid Loss 사용
-                maxiter=150, popsize=50,
-                
-                # Absolute Bounds
+                name="1. Pre-Critical Footprint",
+                optimize_keys=footprint_params | {'bkg'},
+                loss_fn=LINEAR_MSE,
+                q_max=0.045,  
+                maxiter=80, popsize=40,
                 temp_bounds={
-                    'bkg': (-6.5, -4.5), 
-                    'Target_Film.roughness': (2.0, 40.0),
-                    'beam_width': (0.09, 0.11),
-                    'dq': (0.002, 0.03)
+                    'L': (5.0, 100.0),
+                    'beam_width': (0.02, 0.5),  # [KEY]
+                    'tth_offset': (-0.1, 0.1),
+                    'bkg': (-10.0, -4.0)
+                }
+            ),
+            
+            # Stage 2: Critical Angle & SLD
+            StageConfig(
+                name="2. Critical Angle & SLD",
+                optimize_keys=sld_params | {'dq', 'Substrate.roughness'},
+                loss_fn=LINEAR_MSE,
+                q_min=0.03, q_max=0.09,
+                maxiter=80, popsize=40,
+                temp_bounds={
+                    'dq': (0.001, 0.03),
+                    'Substrate.roughness': (0.0, 15.0)
+                }
+            ),
+            
+            # Stage 3: Thickness
+            StageConfig(
+                name="3. Fix Thickness",
+                use_grid_search=True,
+                grid_target_key="Target_Film.thickness",
+                loss_fn=CORRELATION,
+                grid_points=300
+            ),
+            
+            # Stage 4: Fringe Depth
+            StageConfig(
+                name="4. Fringe Depth",
+                optimize_keys=shape_params | {'Top_Layer.thickness'},
+                loss_fn=LOG_MSE,
+                q_max=0.35,
+                maxiter=100, popsize=40
+            ),
+
+            # Stage 5: Final Polish
+            StageConfig(
+                name="5. Final Polish",
+                optimize_keys=all_params,
+                loss_fn=HYBRID_LOSS,
+                maxiter=150, popsize=50,
+                temp_bounds={
+                    'bkg': (-7.5, -4.0),
+                    'Target_Film.roughness': (0.0, 40.0),
+                    'beam_width': (0.02, 0.5),
+                    'dq': (0.001, 0.03)
                 },
-                
-                # Smart-Lock (Relative Bounds)
                 relative_bounds={
-                    'Target_Film.sld': 0.05,
-                    'Substrate.sld': 0.05,
-                    'tth_offset': 0.01,
-                    'L': 0.1,
-                    'Target_Film.thickness': 0.2
+                    'Target_Film.sld': 0.10,
+                    'Substrate.sld': 0.10,
+                    'tth_offset': 0.02,
+                    'L': 0.2,
+                    'Target_Film.thickness': 0.1
                 }
             ),
         ]

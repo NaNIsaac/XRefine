@@ -126,6 +126,25 @@ class TrainingConfig(BaseModel):
     
     weights: WeightConfig = Field(default_factory=WeightConfig)
 
+
+class DataConfig(BaseModel):
+    """
+    Configuration for data preprocessing.
+    Normalization strategy selection:
+    - "plateau": Low-angle top-mean = 1.0 (robust, recommended)
+    - "max": Global max = 1.0 (simple)
+    - "anchor": Specific angle (0.2 deg) = 1.0 (physical anchor)
+    - "none": No normalization (raw data - requires wide I0 range)
+    """
+    normalization_mode: Literal["plateau", "max", "anchor", "none"] = "plateau"
+    
+    # Anchor mode: target 2theta angle
+    anchor_tth: float = 0.2
+    
+    # Plateau mode: Q upper limit for searching
+    plateau_q_limit: float = 0.08
+
+
 # ==============================================================================
 # 3. Root Configuration
 # ==============================================================================
@@ -150,6 +169,7 @@ class XRefineConfig(BaseModel):
     augmentations: AugmentationConfig = Field(default_factory=AugmentationConfig)
     train: TrainingConfig = Field(default_factory=TrainingConfig)
     model: ModelArchConfig = Field(default_factory=ModelArchConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
 
     _q_grid_override: Optional[torch.Tensor] = PrivateAttr(default=None)
 
@@ -213,4 +233,9 @@ DEFAULT_SAMPLE = SampleConfig(
     ]
 )
 
-CONFIG = XRefineConfig(sample=DEFAULT_SAMPLE)
+# Load CONFIG from config.yaml if exists, otherwise use default
+_config_path = Path(__file__).parent.parent / "config.yaml"
+if _config_path.exists():
+    CONFIG = XRefineConfig.load_yaml(_config_path)
+else:
+    CONFIG = XRefineConfig(sample=DEFAULT_SAMPLE)

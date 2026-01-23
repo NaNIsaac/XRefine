@@ -113,21 +113,172 @@ def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
 # Main Pipeline
 # -----------------------------------------------------------------------------
 def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
+    """
+    Load and Normalize Data using configurable normalization strategy.
+    
+    Normalization mode is controlled by config.data.normalization_mode:
+    - "plateau": Low-angle top-mean = 1.0 (robust, recommended)
+    - "max": Global max = 1.0 (simple)
+    - "anchor": Specific angle = 1.0 (physical anchor)
+    - "none": No normalization (raw data)
+    """
+    from xrefine.data.normalization import apply_normalization
+    
     try:
+        # 1. Load Raw Data
         df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
         for col in df.columns:
             df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
-        x_raw, y_raw = df.values[:, 0], df.values[:, 1]
-        x_raw = tth2q(x_raw, config.instrument.wavelength)
-        y_norm = y_raw / (y_raw.max() + 1e-12)
-        log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
+        
+        x_raw_tth, y_raw = df.values[:, 0], df.values[:, 1]
+        x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
+
+        # 2. Configurable Normalization via config.data.normalization_mode
+        y_norm = apply_normalization(
+            y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth
+        )
+        
+        # 3. Log Transform (allow values > 1.0 for noise handling)
+        log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
+        
+        # 4. Interpolate to Q-Grid
         q_target = config.q_grid.cpu().numpy()
-        log_y_interp = np.interp(q_target, x_raw, log_y_raw)
-        log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = LOG_MASK_VALUE
+        log_y_interp = np.interp(q_target, x_raw_q, log_y_raw)
+        
+        # Out of range masking
+        log_y_interp[(q_target < x_raw_q.min()) | (q_target > x_raw_q.max())] = LOG_MASK_VALUE
+
         return torch.from_numpy(log_y_interp).float().view(1, -1)
+
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
         raise
+
+
+def pre_fit_i0(model, p_init, log_r_obs, xrr_config, q_limit: float = 0.06):
+    """
+    Pre-fit I0 to match the low-angle plateau region.
+    
+    This ensures the simulation scale matches the normalized data BEFORE
+    any other refinement. I0 is fitted using Linear MSE in the plateau region,
+    then fixed for subsequent stages.
+    
+    Args:
+        model: The PINN model with simulator
+        p_init: Initial ParamSet from AI
+        log_r_obs: Normalized observed data (log10 scale)
+        xrr_config: XRefineConfig
+        q_limit: Upper Q limit for plateau fitting (default 0.06 Å⁻¹)
+        
+    Returns:
+        Updated ParamSet with fitted I0
+    """
+    import torch.optim as optim
+    
+    device = xrr_config.device
+    q_grid = xrr_config.q_grid.to(device)
+    log_r_obs_gpu = log_r_obs.to(device)
+    
+    # Mask for low-Q plateau region only
+    mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid < q_limit)
+    
+    if mask.sum() < 5:
+        logger.warning(f"Pre-fit I0: Not enough points in Q < {q_limit}. Skipping.")
+        return p_init
+    
+    # Clone params and enable gradient only for I0
+    p_current = p_init.clone()
+    
+    if 'i0' not in p_current._params:
+        logger.warning("Pre-fit I0: 'i0' not in params. Skipping.")
+        return p_init
+    
+    i0_tensor = p_current._params['i0']
+    i0_tensor.requires_grad = True
+    
+    # Also fit bkg for better matching
+    bkg_tensor = p_current._params.get('bkg')
+    params_to_opt = [i0_tensor]
+    if bkg_tensor is not None:
+        bkg_tensor.requires_grad = True
+        params_to_opt.append(bkg_tensor)
+    
+    # Convert observed data to linear scale for comparison
+    r_obs_linear = 10 ** log_r_obs_gpu
+    
+    # [NEW] Estimate initial I0 from data scale ratio in plateau region
+    # For 'none' mode, observed data can be very large (e.g., 1e6 counts)
+    with torch.no_grad():
+        t, r, s = p_current.assemble_structure()
+        r_sim_raw = model.simulator(q_grid, t, r, s)
+        
+        # Estimate scale from plateau region
+        obs_plateau = r_obs_linear[mask].mean()
+        sim_plateau = r_sim_raw[mask].mean()
+        
+        if sim_plateau > 1e-12:
+            estimated_i0 = (obs_plateau / sim_plateau).item()
+            # Clamp to reasonable range
+            estimated_i0 = max(0.01, min(estimated_i0, 1e6))
+            p_current._params['i0'].fill_(estimated_i0)
+            logger.info(f"  [Pre-fit] Initial I0 estimate: {estimated_i0:.4f} (obs/sim = {obs_plateau.item():.2e}/{sim_plateau.item():.2e})")
+    
+    # Adaptive I0 range based on normalization mode
+    norm_mode = xrr_config.data.normalization_mode.lower()
+    if norm_mode == "none":
+        # Raw data can have very different scales
+        i0_min, i0_max = 0.01, 1e6
+    else:
+        # Normalized data: I0 should be close to 1.0
+        i0_min, i0_max = 0.1, 5.0
+    
+    optimizer = optim.Adam(params_to_opt, lr=0.1)
+    
+    best_loss = float('inf')
+    best_i0 = p_current._params['i0'].item()
+    best_bkg = bkg_tensor.item() if bkg_tensor is not None else -10.0
+    
+    for step in range(100):  # More iterations
+        optimizer.zero_grad()
+        
+        # Simulate
+        with torch.enable_grad():
+            t, r, s = p_current.assemble_structure()
+            r_sim = model.simulator(q_grid, t, r, s)
+            
+            # Apply I0 and bkg
+            i0_val = p_current._params['i0']
+            bkg_val = p_current._params.get('bkg', torch.tensor([[-10.0]], device=device))
+            r_sim_scaled = r_sim * i0_val + (10 ** bkg_val)
+            
+            # Linear MSE in plateau region (match absolute scale)
+            loss = torch.mean(((r_sim_scaled - r_obs_linear) ** 2) * mask)
+            
+            loss.backward()
+            optimizer.step()
+            
+            # Clamp I0 to adaptive range
+            with torch.no_grad():
+                p_current._params['i0'].clamp_(i0_min, i0_max)
+                if 'bkg' in p_current._params:
+                    p_current._params['bkg'].clamp_(-12.0, -3.0)
+        
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            best_i0 = p_current._params['i0'].item()
+            if 'bkg' in p_current._params:
+                best_bkg = p_current._params['bkg'].item()
+    
+    # Set best values and detach
+    p_current._params['i0'] = torch.tensor([[best_i0]], device=device)
+    if 'bkg' in p_current._params:
+        p_current._params['bkg'] = torch.tensor([[best_bkg]], device=device)
+    
+    logger.info(f"✅ Pre-fit I0: {p_init._params['i0'].item():.4f} → {best_i0:.4f} "
+                f"(bkg: {best_bkg:.2f}, Q < {q_limit})")
+    
+    return p_current
+
 
 def grid_search_thickness(model, p_init, log_r_obs, xrr_config, refine_config, stage_config):
     target_key = stage_config.grid_target_key 
@@ -171,12 +322,46 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
     log_r_obs_gpu = log_r_obs.to(xrr_config.device)
     logger.info("Starting Hybrid Refinement Pipeline...")
 
+    # [NEW] Stage 0: Pre-fit I0 to match low-angle region
+    # This ensures simulation scale matches data BEFORE other refinement
+    q_limit = getattr(xrr_config.data, 'plateau_q_limit', 0.06)
+    p_current = pre_fit_i0(model, p_current, log_r_obs, xrr_config, q_limit=q_limit)
+    
+    # [Pre-fit I0 as initial estimate only - stages can still adjust]
+    # fitted_i0 = p_current._params['i0'].item() if 'i0' in p_current._params else 1.0
+
     for i, stage in enumerate(refine_config.stages):
         stage_name = stage.name
         p_start_stage = p_current.clone()
         fom_init = calculate_fom(model, p_current, log_r_obs_gpu, xrr_config, refine_config.q_cutoff)
         
         current_stage_config = deepcopy(stage)
+        
+        # [REMOVED I0 Locking - let stages optimize I0 if needed]
+
+        # [NEW] Physics Constraint: Roughness limit (User Rule: roughness <= 0.5 * thickness)
+        # 프린지가 'Washed out' 되는 것을 방지하기 위해 거칠기를 두께의 절반으로 제한
+        for layer_key in ['Target_Film', 'Top_Layer']:
+            thick_key = f"{layer_key}.thickness"
+            rough_key = f"{layer_key}.roughness"
+            # 최적화 대상인 경우에만 제약 적용
+            if thick_key in p_current._params and rough_key in current_stage_config.optimize_keys:
+                t_val = p_current._params[thick_key].item()
+                # Ensure roughness doesn't exceed 50% of thickness, but allow at least 2.0A
+                r_max = max(2.0, t_val * 0.5)
+                
+                if not current_stage_config.temp_bounds:
+                    current_stage_config.temp_bounds = {}
+                
+                # 기존 Bounds가 있다면 더 좁은 범위(교집합)를 선택
+                existing_bounds = current_stage_config.temp_bounds.get(rough_key)
+                if existing_bounds:
+                    new_max = min(existing_bounds[1], r_max)
+                    current_stage_config.temp_bounds[rough_key] = (existing_bounds[0], new_max)
+                else:
+                    current_stage_config.temp_bounds[rough_key] = (0.0, r_max)
+                
+                # logger.info(f"  [Physics] Constraining {rough_key} <= {r_max:.2f} (Half-Thickness Rule)")
         
         # [Smart-Lock Logic] (기존 유지)
         if hasattr(stage, 'relative_bounds') and stage.relative_bounds:
@@ -258,6 +443,13 @@ def run_real_inference(checkpoint_path, data_path, output_dir="./results", refin
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config_data = ckpt.get('config')
     xrr_config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
+    
+    # [NEW] Override data config from current config.yaml
+    # This ensures normalization settings from config.yaml are used, not checkpoint
+    from xrefine.config import CONFIG
+    xrr_config.data = CONFIG.data
+    logger.info(f"  [Config] Using normalization mode: {xrr_config.data.normalization_mode}")
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     xrr_config.device = device
     xrr_config.q_grid = xrr_config.q_grid.to(device)

@@ -131,6 +131,10 @@ def generate_synthetic_batch(
     # 4. Augmentation
     if augmenter is not None:
         reflectivity = augmenter(q_batch, reflectivity, params)
+    
+    # 5. Apply Configurable Normalization (consistent with real data loading)
+    from xrefine.data.normalization import apply_normalization_tensor
+    reflectivity = apply_normalization_tensor(reflectivity, q_grid, config)
         
     return reflectivity, params
 

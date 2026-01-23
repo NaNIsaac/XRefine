@@ -35,28 +35,33 @@ def calculate_r2(y_true: torch.Tensor, y_pred: torch.Tensor, mask: torch.Tensor)
     return float(r2.item())
 
 def load_real_data(file_path: str, config: XRefineConfig):
-    """실제 데이터를 로드하고 유효 q 영역을 추출합니다."""
+    """
+    Load and Normalize Data using configurable normalization strategy.
+    
+    Normalization mode is controlled by config.data.normalization_mode.
+    """
+    from xrefine.data.normalization import apply_normalization
+    
     # 데이터 로드
     df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
     for col in df.columns:
         df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
 
-    x_raw, y_raw = df.values[:, 0], df.values[:, 1]
+    x_raw_tth, y_raw = df.values[:, 0], df.values[:, 1]
     
     # 2theta -> q 변환
-    x_raw = tth2q(x_raw, config.instrument.wavelength)
+    x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
 
-    # [중요] ALD 데이터의 Plateau를 기준으로 1.0 정규화
-    norm_factor = y_raw.max()
-    y_norm = y_raw / (norm_factor + 1e-12)
-    log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
+    # Configurable Normalization
+    y_norm = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+    log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
 
     # Grid Interpolation
     q_target = config.q_grid.numpy()
-    log_y_interp = np.interp(q_target, x_raw, log_y_raw)
+    log_y_interp = np.interp(q_target, x_raw_q, log_y_raw)
     
     # 측정 범위 밖 마스킹 (-15.0)
-    log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = -15.0
+    log_y_interp[(q_target < x_raw_q.min()) | (q_target > x_raw_q.max())] = -15.0
     
     return torch.from_numpy(log_y_interp).float().view(1, -1)
 

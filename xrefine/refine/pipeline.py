@@ -21,6 +21,7 @@ from xrefine.logger import logger
 from xrefine.refine.config import RefinementConfig, StageConfig, DEFAULT_CONFIG
 from xrefine.constants import LOG_MASK_VALUE, LOG_VALID_THRESHOLD
 from xrefine.refine.optimizer import optimize_step
+from xrefine.refine.pipeline_next import pre_fit_i0  # [NEW] Import pre_fit_i0
 
 # -----------------------------------------------------------------------------
 # Metric & Report Utils
@@ -114,17 +115,27 @@ def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
 # Main Pipeline
 # -----------------------------------------------------------------------------
 def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
+    """
+    Load and Normalize Data using configurable normalization strategy.
+    
+    Normalization mode is controlled by config.data.normalization_mode.
+    """
+    from xrefine.data.normalization import apply_normalization
+    
     try:
         df = pd.read_csv(file_path, sep=r'\s+', header=None, engine='python', dtype=str)
         for col in df.columns:
             df[col] = df[col].str.replace('(', '', regex=False).str.replace(')', '', regex=False).astype(float)
-        x_raw, y_raw = df.values[:, 0], df.values[:, 1]
-        x_raw = tth2q(x_raw, config.instrument.wavelength)
-        y_norm = y_raw / (y_raw.max() + 1e-12)
-        log_y_raw = np.log10(np.clip(y_norm, 1e-11, 1.0))
+        x_raw_tth, y_raw = df.values[:, 0], df.values[:, 1]
+        x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
+        
+        # Configurable Normalization
+        y_norm = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+        
+        log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
         q_target = config.q_grid.cpu().numpy()
-        log_y_interp = np.interp(q_target, x_raw, log_y_raw)
-        log_y_interp[(q_target < x_raw.min()) | (q_target > x_raw.max())] = LOG_MASK_VALUE
+        log_y_interp = np.interp(q_target, x_raw_q, log_y_raw)
+        log_y_interp[(q_target < x_raw_q.min()) | (q_target > x_raw_q.max())] = LOG_MASK_VALUE
         return torch.from_numpy(log_y_interp).float().view(1, -1)
     except Exception as e:
         logger.error(f"Failed to load data: {e}")
@@ -172,12 +183,25 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
     log_r_obs_gpu = log_r_obs.to(xrr_config.device)
     logger.info("Starting Refinement Pipeline...")
 
+    # [NEW] Stage 0: Pre-fit I0 to match low-angle region
+    q_limit = getattr(xrr_config.data, 'plateau_q_limit', 0.06)
+    p_current = pre_fit_i0(model, p_current, log_r_obs, xrr_config, q_limit=q_limit)
+    
+    # [NEW] Lock I0 after pre-fit
+    fitted_i0 = p_current._params['i0'].item() if 'i0' in p_current._params else 1.0
+
     for i, stage in enumerate(refine_config.stages):
         stage_name = stage.name
         p_start_stage = p_current.clone()
         fom_init = calculate_fom(model, p_current, log_r_obs_gpu, xrr_config, refine_config.q_cutoff)
         
         current_stage_config = deepcopy(stage)
+        
+        # [NEW] Force I0 to stay fixed at pre-fitted value
+        if 'i0' in current_stage_config.optimize_keys:
+            current_stage_config.optimize_keys = current_stage_config.optimize_keys - {'i0'}
+            logger.info(f"  [I0 Locked] Stage '{stage_name}': i0 fixed at {fitted_i0:.4f}")
+        current_stage_config.fixed_params['i0'] = fitted_i0
         
         # [NEW] Smart-Lock Logic: Relative Bounds Processing
         # Config에 relative_bounds가 정의되어 있으면, 현재 값(p_current) 기준으로 temp_bounds를 생성합니다.
