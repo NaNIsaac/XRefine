@@ -69,74 +69,66 @@ class RefinementConfig:
             'Target_Film.thickness', 'Top_Layer.thickness', 'bkg'
         }
 
+        # [Revised Strategy]
+        # 1. Scale & Footprint (Low Angle) - Linear Loss for amplitude match
+        # 2. Main Film (Thickness, SLD) - Correlation/Log Loss for frequency match
+        # 3. Fine Tuning (Roughness, etc.) - Log/Hybrid Loss for detail
+        
         return [
-            # Stage 1: Pre-Critical Footprint (Q < 0.04)
-            # Beam width 최적화가 핵심! (0.1 고정 해제)
+            # Stage 1: Scale & Footprint (Absolute Amplitude)
+            # Match I0, Beam Width, Background first.
             StageConfig(
-                name="1. Pre-Critical Footprint",
-                optimize_keys=footprint_params | {'bkg'},
-                loss_fn=LINEAR_MSE,
-                q_max=0.045,  
-                maxiter=80, popsize=40,
+                name="1. Scale & Footprint",
+                optimize_keys={'i0', 'beam_width', 'bkg', 'tth_offset'},
+                loss_fn=LINEAR_MSE, # Amplitude Matching
+                q_max=0.06,  # Focus on critical angle & start of fringes
+                maxiter=50, popsize=40,
                 temp_bounds={
-                    'L': (5.0, 100.0),
-                    'beam_width': (0.02, 0.5),  # [KEY]
-                    'tth_offset': (-0.1, 0.1),
+                    'i0': (0.5, 3.0),
+                    'beam_width': (0.01, 0.5),
                     'bkg': (-10.0, -4.0)
                 }
             ),
             
-            # Stage 2: Critical Angle & SLD
+            # Stage 2: Main Film Structure (Periodicity)
+            # Fix Thickness and SLD to get correct fringe frequency
             StageConfig(
-                name="2. Critical Angle & SLD",
-                optimize_keys=sld_params | {'dq', 'Substrate.roughness'},
-                loss_fn=LINEAR_MSE,
-                q_min=0.03, q_max=0.09,
-                maxiter=80, popsize=40,
+                name="2. Main Film Structure",
+                optimize_keys={'Target_Film.thickness', 'Target_Film.sld', 'Substrate.sld', 'dq'},
+                loss_fn=CORRELATION, # Phase/Frequency Matching (Invariant to Scale/Damping)
+                q_min=0.03, q_max=0.35,
+                maxiter=80, popsize=50,
+                use_grid_search=True, # Trust Grid for thickness
+                grid_target_key="Target_Film.thickness",
+                grid_points=300,
                 temp_bounds={
-                    'dq': (0.001, 0.03),
-                    'Substrate.roughness': (0.0, 15.0)
+                    'Target_Film.thickness': (10.0, 2000.0),
+                    'Target_Film.sld': (0.0, 150.0),
+                    'dq': (0.003, 0.03)
                 }
             ),
             
-            # Stage 3: Thickness
+            # Stage 3: Fine Tuning (Shape & Damping)
+            # Now fit Roughness and detailed shape
             StageConfig(
-                name="3. Fix Thickness",
-                use_grid_search=True,
-                grid_target_key="Target_Film.thickness",
-                loss_fn=CORRELATION,
-                grid_points=300
-            ),
-            
-            # Stage 4: Fringe Depth
-            StageConfig(
-                name="4. Fringe Depth",
-                optimize_keys=shape_params | {'Top_Layer.thickness'},
-                loss_fn=LOG_MSE,
-                q_max=0.35,
-                maxiter=100, popsize=40
-            ),
-
-            # Stage 5: Final Polish
-            StageConfig(
-                name="5. Final Polish",
+                name="3. Fine Tuning",
                 optimize_keys=all_params,
-                loss_fn=HYBRID_LOSS,
+                loss_fn=LOG_MSE, # Sensitive to damping (roughness)
                 maxiter=150, popsize=50,
                 temp_bounds={
-                    'bkg': (-7.5, -4.0),
-                    'Target_Film.roughness': (0.0, 40.0),
-                    'beam_width': (0.02, 0.5),
-                    'dq': (0.001, 0.03)
+                    'Top_Layer.thickness': (0.0, 100.0),
+                    'Top_Layer.roughness': (0.0, 8.0),
+                    'Substrate.roughness': (0.0, 8.0),
+                    'Target_Film.roughness': (0.0, 20.0),
+                    'Target_Film.sld': (0.0, 150.0),
+                    'i0': (0.5, 3.0),
+                    'dq': (0.003, 0.03)
                 },
                 relative_bounds={
-                    'Target_Film.sld': 0.10,
-                    'Substrate.sld': 0.10,
-                    'tth_offset': 0.02,
-                    'L': 0.2,
-                    'Target_Film.thickness': 0.1
+                    'Target_Film.thickness': 0.1, # Don't drift too far from Stage 2
+                    'Target_Film.sld': 0.1
                 }
-            ),
+            )
         ]
 
 DEFAULT_CONFIG = RefinementConfig()

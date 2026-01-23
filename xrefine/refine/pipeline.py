@@ -130,7 +130,8 @@ def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
         x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
         
         # Configurable Normalization
-        y_norm = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+        y_norm, scale = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
+        logger.info(f"  [Legacy] Normalization Scale Factor: {scale:.4e}")
         
         log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
         q_target = config.q_grid.cpu().numpy()
@@ -274,6 +275,14 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
 def run_real_inference(checkpoint_path, data_path, output_dir="./results", refine_config=None, q_cutoff=None):
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config_data = ckpt.get('config')
+    
+    # [FIX] Force Anchor Normalization for Legacy Pipeline (User Request)
+    if isinstance(config_data, dict):
+        if 'data' not in config_data: config_data['data'] = {}
+        config_data['data']['normalization_mode'] = 'anchor'
+        config_data['data']['anchor_tth'] = 0.2
+        logger.info("[Legacy] Forcing Anchor Normalization (0.2 deg)")
+
     xrr_config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     xrr_config.device = device

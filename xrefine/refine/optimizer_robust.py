@@ -15,54 +15,88 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
     device = xrr_config.device
     log_r_obs_gpu = log_r_obs.to(device)
     q_grid = xrr_config.q_grid.to(device)
-
+    
     q_max_limit = stage_config.q_max if stage_config.q_max else 100.0
     mask = (log_r_obs_gpu > LOG_VALID_THRESHOLD) & (q_grid <= q_max_limit)
     if stage_config.q_min:
         mask &= (q_grid >= stage_config.q_min)
 
-    # 2. Collect Parameters
-    p_current = p_init.clone()
-    params_to_opt = []
-    param_names = []
-
-    for key, tensor in p_current._params.items():
-        if key in stage_config.optimize_keys:
-            tensor.requires_grad = True
-            params_to_opt.append(tensor)
-            param_names.append(key)
-        else:
-            tensor.requires_grad = False
-            
-    if not params_to_opt:
-        if verbose: logger.warning(f"Stage {stage_config.name}: No parameters to optimize.")
-        return p_current
-
-    # 3. Select Optimizer & Clipping Strategy
-    use_lbfgs = "Final" in stage_config.name or "LBFGS" in stage_config.name
+    # 2. Parameter Normalization
+    param_info_list = []
+    opt_tensor_list = []
     
-    # [ADAPTIVE STRATEGY]
-    # 두께(Thickness)나 형태(Shape)를 건드리는 후반부엔 엄격하게(1.0)
-    # 스케일(Scale)이나 임계각(Anchor)을 잡는 초반부엔 널널하게(10.0 or None)
+    reconst_dict = {k: v.detach().clone() for k, v in p_init._params.items()}
+    
+    # Range Lookup Helper
+    def get_range(key):
+        # 1. Global Parameters
+        if hasattr(xrr_config.sample, key):
+            return getattr(xrr_config.sample, key)
+            
+        # 2. Substrate Parameters
+        if key.startswith("Substrate."):
+            sub_key = key.split(".")[-1]
+            if hasattr(xrr_config.sample.substrate, sub_key):
+                return getattr(xrr_config.sample.substrate, sub_key)
+                
+        # 3. Layer Parameters
+        if "." in key:
+            layer_name, param_name = key.split(".")
+            for layer in xrr_config.sample.layers:
+                if layer.name == layer_name and hasattr(layer, param_name):
+                    return getattr(layer, param_name)
+                    
+        return None
+
+    for key in stage_config.optimize_keys:
+        if key not in p_init._params: continue
+        
+        # Get Bounds
+        rng = get_range(key)
+        if rng is not None:
+            min_v, max_v = rng
+            # Ensure safe bounds
+            if min_v >= max_v: max_v = min_v + 1e-6
+        else:
+            # Fallback (Safety)
+            val = p_init._params[key].item()
+            min_v, max_v = val * 0.5, val * 1.5
+            if min_v == max_v: min_v, max_v = val-0.1, val+0.1
+            
+        current_val = p_init._params[key].detach()
+        
+        # Normalize to [0, 1]
+        # norm = (val - min) / (max - min)
+        norm_val = (current_val - min_v) / (max_v - min_v + 1e-9)
+        norm_val = torch.clamp(norm_val, 0.0, 1.0)
+        
+        # Create Learnable Parameter
+        p_tensor = norm_val.clone().requires_grad_(True)
+        
+        opt_tensor_list.append(p_tensor)
+        param_info_list.append({
+            'key': key,
+            'min': min_v,
+            'max': max_v,
+            'tensor': p_tensor
+        })
+
+    if not opt_tensor_list:
+        if verbose: logger.warning(f"Stage {stage_config.name}: No parameters to optimize.")
+        return p_init
+        
+    params_to_opt = opt_tensor_list
+
+    # 3. Select Optimizer
+    use_lbfgs = "Final" in stage_config.name or "LBFGS" in stage_config.name
     is_sensitive_stage = any(x in stage_config.name for x in ["Thickness", "Shape", "Polish"])
     
-    if is_sensitive_stage:
-        clip_norm = 1.0   # 꽉 조임 (두께 폭발 방지)
-    else:
-        clip_norm = 20.0  # 널널함 (I0, SLD 등은 크게 움직여야 함)
-
     if use_lbfgs:
-        optimizer = optim.LBFGS(
-            params_to_opt, 
-            lr=1.0, 
-            max_iter=20, 
-            history_size=10, 
-            line_search_fn="strong_wolfe"
-        )
+        optimizer = optim.LBFGS(params_to_opt, lr=1.0, max_iter=20, history_size=10, line_search_fn="strong_wolfe")
         num_steps = max(1, stage_config.maxiter // 4)
     else:
-        # Adam LR도 스테이지별 미세 조정
-        base_lr = 0.005 if is_sensitive_stage else 0.02 # 초반엔 더 빠르게(0.02)
+        # Normalized Space에서는 LR 0.01~0.05 정도가 적절함
+        base_lr = 0.01 if is_sensitive_stage else 0.05 
         optimizer = optim.Adam(params_to_opt, lr=base_lr)
         num_steps = stage_config.maxiter
 
@@ -71,10 +105,30 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
 
     # 4. Optimization Loop
     best_loss = float('inf')
-    p_best = p_current.clone()
+    # p_best keeps a *copy* of VALUES, not tensors
+    p_best_vals = {k: v.detach().clone() for k, v in reconst_dict.items()}
+
+    def get_real_values():
+        current_vals = {}
+        for info in param_info_list:
+            # Denormalize: val = norm * (max - min) + min
+            # Clamp norm to [0, 1] for safety before mapping
+            norm_v = torch.clamp(info['tensor'], 0.0, 1.0)
+            real_v = norm_v * (info['max'] - info['min']) + info['min']
+            current_vals[info['key']] = real_v
+        return current_vals
 
     def closure():
         optimizer.zero_grad()
+        
+        # Update dynamic params
+        real_vals = get_real_values()
+        for k, v in real_vals.items():
+            reconst_dict[k] = v
+            
+        # Reconstruct ParamSet (Virtual)
+        # We cheat by using p_init structure but replacing internal dict
+        p_current = p_init.__class__(reconst_dict, p_init.layer_names, device)
         
         t, r, s = p_current.assemble_structure()
         r_sim = model.simulator(q_grid, t, r, s)
@@ -85,14 +139,24 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
         
         loss = loss_fn(r_sim, log_r_obs_gpu, mask)
         
-        if loss.requires_grad:
-            loss.backward()
+        # [Roughness Penalty]
+        # Prevent roughness from killing fringes completely
+        # 1. Thickness > 0 Penalty (Soft Constraint in Normalized Space)
+        # 2. Roughness too high penalty
+        pen = 0.0
+        # If roughness > 20A, penalize
+        # Note: We are optimization normalized params, but penalty on real values
+        if 'Target_Film.roughness' in reconst_dict:
+            r_val = reconst_dict['Target_Film.roughness']
+            if r_val > 15.0:
+                pen += (r_val - 15.0) * 0.1
+        
+        total_loss = loss + pen 
+        
+        if total_loss.requires_grad:
+            total_loss.backward()
             
-            # [ADAPTIVE CLIPPING applied here]
-            if clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(params_to_opt, max_norm=clip_norm)
-            
-        return loss
+        return total_loss
 
     for step in range(num_steps):
         try:
@@ -102,23 +166,25 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
                 closure()
                 optimizer.step()
             
-            # Physical Clamping
+            # Bounds Manifold Projection (Clamp to [0,1] in Norm Space)
+            # This implicitly enforces Physical Bounds defined in Config.ranges
             with torch.no_grad():
-                for name, tensor in zip(param_names, params_to_opt):
-                    if name in bounds_map:
-                        min_v, max_v = bounds_map[name]
-                        tensor.clamp_(min=min_v, max=max_v)
-
+                for p in params_to_opt:
+                    p.clamp_(0.0, 1.0)
+                    
             # Keep Best
             with torch.no_grad():
-                current_loss = closure().item()
-            
-            if current_loss < best_loss:
-                best_loss = current_loss
-                p_best = p_current.clone()
-                
+                current_loss = closure().item() # Re-eval with clamped values
+                if current_loss < best_loss:
+                    best_loss = current_loss
+                    # Save snapshot of denormalized values
+                    real_snapshot = get_real_values()
+                    for k, v in real_snapshot.items():
+                        p_best_vals[k] = v.detach().clone()
+                        
         except RuntimeError as e:
             logger.warning(f"Optimization interrupted at step {step}: {e}")
             break
 
-    return p_best
+    # Return constructed ParamSet from best values
+    return p_init.__class__(p_best_vals, p_init.layer_names, device)

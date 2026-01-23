@@ -323,10 +323,14 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
     log_r_obs_gpu = log_r_obs.to(xrr_config.device)
     logger.info("Starting Hybrid Refinement Pipeline...")
 
-    # [NEW] Stage 0: Pre-fit I0 to match low-angle region
-    # This ensures simulation scale matches data BEFORE other refinement
-    q_limit = getattr(xrr_config.data, 'plateau_q_limit', 0.06)
-    p_current = pre_fit_i0(model, p_current, log_r_obs, xrr_config, q_limit=q_limit)
+    # [NEW] Stage 0: Pre-fit I0 (Only for non-anchor modes)
+    # If Anchor mode is active, we already applied strict 0.2 deg correction in run_real_inference.
+    # Running pre-fit here would overwrite that precise correction with a plateau average.
+    if xrr_config.data.normalization_mode != 'anchor':
+        q_limit = getattr(xrr_config.data, 'plateau_q_limit', 0.06)
+        p_current = pre_fit_i0(model, p_current, log_r_obs, xrr_config, q_limit=q_limit)
+    else:
+        logger.info("⚓ [Refinement] Skipping Pre-fit I0 (Anchor Mode active)")
     
     # [Pre-fit I0 as initial estimate only - stages can still adjust]
     # fitted_i0 = p_current._params['i0'].item() if 'i0' in p_current._params else 1.0
@@ -443,6 +447,14 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
 def run_real_inference(checkpoint_path, data_path, output_dir="./results", refine_config=None, q_cutoff=None):
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config_data = ckpt.get('config')
+    
+    # [NEW] Force Anchor Normalization for Safety (User Request)
+    if isinstance(config_data, dict):
+        if 'data' not in config_data: config_data['data'] = {}
+        config_data['data']['normalization_mode'] = 'anchor'
+        config_data['data']['anchor_tth'] = 0.2
+        logger.info("[New Pipeline] Forcing Anchor Normalization (0.2 deg)")
+
     xrr_config = XRefineConfig(**config_data) if isinstance(config_data, dict) else config_data
     
     # [NEW] Override data config from current config.yaml
@@ -475,6 +487,51 @@ def run_real_inference(checkpoint_path, data_path, output_dir="./results", refin
     # [TIP] Force Realistic Initial Beam Width
     if 'beam_width' in p_ai._params:
         p_ai._params['beam_width'].fill_(0.1)
+
+    # [USER REQUEST] Force AI to match Data at Anchor Point (0.2 deg)
+    # This guarantees the curve intersects at the normalization point.
+    try:
+        if isinstance(xrr_config.data.anchor_tth, (float, int)):
+            tth_anchor = float(xrr_config.data.anchor_tth)
+            # Find Q index for anchor tth
+            wav = xrr_config.instrument.wavelength
+            q_anchor = 4 * np.pi * np.sin(np.radians(tth_anchor / 2)) / wav
+            
+            # Use closest grid point
+            q_grid_gpu = xrr_config.q_grid.to(device)
+            idx_anchor = torch.argmin(torch.abs(q_grid_gpu - q_anchor))
+            
+            # Simulate current AI guess at this point
+            with torch.no_grad():
+                # 1. Simulate R (Normalized scale 0~1)
+                t, r, s = p_ai.assemble_structure()
+                dum_q = q_grid_gpu[idx_anchor].view(1, 1) # Single Point
+                
+                # Full simulation at anchor point
+                r_sim_anchor = abeles_constant_smearing(
+                    q=dum_q, thickness=t, roughness=r, sld=s,
+                    sample_length=p_ai.L if hasattr(p_ai, 'L') else None, 
+                    beam_width=p_ai.beam_width if hasattr(p_ai, 'beam_width') else None, 
+                    dq=p_ai.dq if hasattr(p_ai, 'dq') else torch.tensor([[0.0]], device=device), 
+                    gauss_num=11, abeles_func=simulator 
+                )
+                
+                # Check current I0
+                cur_i0 = p_ai.i0.item() if hasattr(p_ai, 'i0') else 1.0
+                
+                # Sim Value = Correct_Sim * I0 (Background ignored at peak)
+                current_val = r_sim_anchor.item() * cur_i0
+                
+                # Target Value is 1.0 (because we normalized input to 1.0 at anchor)
+                # Correction Factor
+                if current_val > 1e-12:
+                    correction = 1.0 / current_val
+                    new_i0 = cur_i0 * correction
+                    if hasattr(p_ai, 'i0'):
+                        p_ai._params['i0'].fill_(new_i0)
+                        logger.info(f"⚓ [Anchor Correction] Adjusting I0: {cur_i0:.4f} -> {new_i0:.4f} (Match at {tth_anchor} deg)")
+    except Exception as e:
+        logger.warning(f"Failed to apply anchor correction: {e}")
 
     logger.info("AI Initial Guess Done.")
     

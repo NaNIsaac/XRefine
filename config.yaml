@@ -16,8 +16,8 @@ data:
   # - max: Global max = 1.0 (simple)
   # - anchor: Specific angle (anchor_tth) = 1.0 (physical)
   # - none: No normalization (raw data)
-  normalization_mode: "plateau"  # [Current model trained with this!]
-  anchor_tth: 0.2         # For "anchor" mode: target 2theta angle
+  normalization_mode: "anchor"  # [USER REQUEST]
+  anchor_tth: 0.2               # [USER REQUEST] Target 2theta angle
   plateau_q_limit: 0.08   # For "plateau" mode: Q upper limit
 
 
@@ -118,7 +118,7 @@ train:
     
     # Global Parameter Weights (Low Priority)
     global_weights:       
-      i0: 10.0
+      i0: 0.0  # [USER REQUEST] Fixed to 1.0 by normalization, no need to learn
       bkg: 1.0
       L: 0.1
       beam_width: 0.1

@@ -99,7 +99,7 @@ class ModelArchConfig(BaseModel):
 class WeightConfig(BaseModel):
     global_weights: dict[str, float] = Field(
         default={
-            "L": 0.1, "i0": 10.0, "bkg": 1.0, "beam_width": 0.1,
+            "L": 0.1, "i0": 0.0, "bkg": 1.0, "beam_width": 0.1,
             "dq": 1.0, "tth_offset": 1.0
         }
     )

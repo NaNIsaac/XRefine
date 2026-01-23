@@ -139,9 +139,14 @@ def generate_synthetic_batch(
     # [DESIGN FIX] Normalization destroys original absolute scale processing.
     # We must adjust target labels ('i0', 'bkg') to match the normalized data context.
     if config.data.normalization_mode.lower() != 'none':
-        # 1. Update I0: New_I0 = Old_I0 / Scale
+        # [USER REQUEST] I0 Target Redefinition
+        # Since data is normalized (e.g., Anchor 0.2 deg = 1.0), the effective I0 of the curve IS 1.0.
+        # We overwrite the target label I0 to 1.0, effectively removing I0 prediction variability 
+        # while training on robustly augmented (then normalized) inputs.
         if 'i0' in params._params:
-            params._params['i0'] = params._params['i0'] / scale
+            # params._params['i0'] = params._params['i0'] / scale
+            # Force target to 1.0 (The model should predict normalized physics)
+            params._params['i0'].fill_(1.0)
             
         # 2. Update Bkg: New_Bkg = Old_Bkg - log10(Scale)
         if 'bkg' in params._params:
