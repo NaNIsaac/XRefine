@@ -12,7 +12,7 @@ from scipy.signal import find_peaks
 from scipy.stats import qmc
 
 from xrefine.config import CONFIG, XRefineConfig
-from xrefine.models import XRR_Fourier_PINN
+from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
 from xrefine.logger import logger
 from xrefine.core.structures import ParamSet
@@ -385,7 +385,7 @@ def run_real_inference(checkpoint_path: str, data_path: str, output_dir: str = "
     # [FIXED] 체크포인트 config를 그대로 사용 (ranges 포함)
     # 기존: config.ranges = CONFIG.ranges (하드코딩 제거됨)
     
-    model = XRR_Fourier_PINN(config=config).to(config.device)
+    model = get_model(config).to(config.device)
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
 

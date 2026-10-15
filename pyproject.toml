@@ -1,7 +1,7 @@
 [project]
 name = "xrefine"
 version = "0.1.0"
-description = "Add your description here"
+description = "Neural network that predicts thin-film layer parameters from X-ray reflectivity curves, with a differentiable Abeles simulator for refinement"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
