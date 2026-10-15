@@ -127,7 +127,7 @@ class AbelesMatrix(nn.Module):
             reflectivity = reflectivity * torch.erf(arg)
 
         return reflectivity
-    
+
 def abeles(*args, **kwargs):
     """Functional interface wrapper"""
     model = AbelesMatrix(device=args[0].device if args else None)
