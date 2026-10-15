@@ -7,8 +7,10 @@ authors:
     given-names: Isaac
     email: isaacyong@naver.com
     affiliation: "Sogang University"
+license: MIT
 repository-code: "https://github.com/NaNIsaac/XRefine"
 abstract: "A physics-informed neural network (PINN) framework for the X-ray reflectivity (XRR) inverse problem that integrates a differentiable physics engine into the network to estimate thin-film thickness, roughness and scattering length density."
+license: MIT
 keywords:
   - "X-ray reflectivity"
   - "XRR"
