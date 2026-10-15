@@ -1,8 +1,9 @@
 [project]
 name = "xrefine"
 version = "0.1.0"
-description = "Add your description here"
+description = "Physics-informed neural network framework for X-ray reflectivity (XRR) analysis"
 readme = "README.md"
+authors = [{ name = "Isaac Yong", email = "isaacyong@naver.com" }]
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib",
@@ -22,6 +23,10 @@ dependencies = [
     "optuna>=4.6.0",
     "pywavelets>=1.9.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/NaNIsaac/XRefine"
+Repository = "https://github.com/NaNIsaac/XRefine"
 
 [[tool.uv.index]]
 name = "pytorch-cu126"

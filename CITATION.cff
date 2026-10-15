@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "XRefine: Physics-informed neural network framework for X-ray reflectivity (XRR) analysis"
+authors:
+  - family-names: Yong
+    given-names: Isaac
+    email: isaacyong@naver.com
+    affiliation: "Sogang University"
+repository-code: "https://github.com/NaNIsaac/XRefine"
+abstract: "A physics-informed neural network (PINN) framework for the X-ray reflectivity (XRR) inverse problem that integrates a differentiable physics engine into the network to estimate thin-film thickness, roughness and scattering length density."
+keywords:
+  - "X-ray reflectivity"
+  - "XRR"
+  - "physics-informed neural network"
+  - "PINN"
+  - "thin films"
+  - "deep learning"
+version: "0.1.0"
+date-released: "2026-01-23"
