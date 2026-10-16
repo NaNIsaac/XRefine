@@ -1,5 +1,7 @@
 # XRefine
 
+Superseded by [ReflectoLearn](https://github.com/NaNIsaac/ReflectoLearn).
+
 A neural network that predicts thin-film layer parameters (thickness, roughness, real and imaginary SLD) from X-ray reflectivity (XRR) curves, with a differentiable Abeles simulator in PyTorch used both in the training loss and for gradient-based refinement afterwards.
 
 Training data is synthesized on the fly from the parameter ranges in `config.yaml` (substrate plus one or more layers, and instrument parameters: sample length, beam width, resolution `dq`, intensity scale, background, 2θ offset), with augmentations for noise, background, resolution and q-shift. The model outputs normalized parameters that are mapped back to physical ranges; the curve reconstructed by the Abeles engine is compared to the input (linear, gradient and log terms), together with a supervised parameter loss whose weight decays over training (`sup_w_start` → `sup_w_end`) and a physics-constraint penalty. Three architectures are registered: `fourier_conv` (Fourier features + 1D CNN, the default), `vit` and `latent_trans`.
