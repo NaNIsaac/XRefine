@@ -210,15 +210,15 @@ def pre_fit_i0(model, p_init, log_r_obs, xrr_config, q_limit: float = 0.06):
     # [NEW] Estimate initial I0 from data scale ratio in plateau region
     # For 'none' mode, observed data can be very large (e.g., 1e6 counts)
     with torch.no_grad():
-        t, r, s = p_current.assemble_structure()
-        r_sim_raw = model.simulator(q_grid, t, r, s)
+        # Same forward model as the stages (footprint, offset, resolution, i0, background)
+        _, r_sim_raw, _ = model.forward_with_params(p_current)
         
         # Estimate scale from plateau region
         obs_plateau = r_obs_linear[mask].mean()
         sim_plateau = r_sim_raw[mask].mean()
         
         if sim_plateau > 1e-12:
-            estimated_i0 = (obs_plateau / sim_plateau).item()
+            estimated_i0 = (p_current._params['i0'] * obs_plateau / sim_plateau).item()
             # Clamp to reasonable range
             estimated_i0 = max(0.01, min(estimated_i0, 1e6))
             p_current._params['i0'].fill_(estimated_i0)
@@ -244,13 +244,7 @@ def pre_fit_i0(model, p_init, log_r_obs, xrr_config, q_limit: float = 0.06):
         
         # Simulate
         with torch.enable_grad():
-            t, r, s = p_current.assemble_structure()
-            r_sim = model.simulator(q_grid, t, r, s)
-            
-            # Apply I0 and bkg
-            i0_val = p_current._params['i0']
-            bkg_val = p_current._params.get('bkg', torch.tensor([[-10.0]], device=device))
-            r_sim_scaled = r_sim * i0_val + (10 ** bkg_val)
+            _, r_sim_scaled, _ = model.forward_with_params(p_current)  # includes i0 and bkg
             
             # Linear MSE in plateau region (match absolute scale)
             loss = torch.mean(((r_sim_scaled - r_obs_linear) ** 2) * mask)

@@ -19,7 +19,8 @@ from torch import Tensor
 from xrefine.core.abeles_enhanced import AbelesMatrixEnhanced
 from xrefine.core.structures import ParamSet
 from xrefine.config import XRefineConfig
-from xrefine.core.smearing import abeles_constant_smearing
+from xrefine.core.smearing import instrument_reflectivity
+from xrefine.data.normalization import apply_normalization_tensor
 from xrefine.physics_utils_enhanced import (
     soft_clamp, 
     soft_clamp_min, 
@@ -219,34 +220,16 @@ class BasePINNModelEnhanced(nn.Module, ABC):
         
         q_batch = self.q_grid.unsqueeze(0).expand(batch_size, -1).to(self.device)
         
-        if 'tth_offset' in params._params:
-            q_batch = q_batch + params.tth_offset * 0.01
-        
-        L = params.L
-        beam_width = params.beam_width
-        dq = params.dq if 'dq' in params._params else None
-        
-        if dq is not None and dq.mean() > 1e-5:
-             r_sim = abeles_constant_smearing(
-                q=q_batch,
-                thickness=thickness,
-                roughness=roughness,
-                sld=sld_full,
-                sample_length=L,
-                beam_width=beam_width,
-                dq=dq,
-                abeles_func=self.simulator
-            )
-        else:
-            r_sim = self.simulator(
-                q=q_batch,
-                thickness=thickness,
-                roughness=roughness,
-                sld=sld_full,
-                sample_length=L,
-                beam_width=beam_width,
-                wavelength=self.config.instrument.wavelength
-            )
+        r_sim = instrument_reflectivity(
+            q_batch, thickness, roughness, sld_full,
+            params.L, params.beam_width,
+            params.dq if 'dq' in params._params else None,
+            params.tth_offset if 'tth_offset' in params._params else None,
+            self.simulator, self.config.instrument.wavelength,
+        )
+        # Normalise the physics curve the way the generator normalises the data, so the
+        # i0 label of 1.0 (and the background shifted by the same scale) describe it.
+        r_sim, _ = apply_normalization_tensor(r_sim, self.q_grid, self.config)
         
         i0 = params.i0
         bkg = params.bkg

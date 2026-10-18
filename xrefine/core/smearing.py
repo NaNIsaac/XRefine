@@ -80,6 +80,26 @@ def abeles_constant_smearing(
     return smeared_curves
 
 
+def instrument_reflectivity(q, thickness, roughness, sld, sample_length, beam_width, dq, tth_offset, simulator, wavelength):
+    """
+    Reflectivity as the instrument records it, before i0 and background: 2θ zero offset,
+    beam footprint and resolution smearing. The training-data generator and the models'
+    reconstruction both call this, so the curves a network learns from and the curves it
+    draws back come from one forward model.
+    """
+    if tth_offset is not None:
+        q = q + tth_offset * 0.01
+    if dq is not None and dq.mean() > 1e-5:
+        return abeles_constant_smearing(
+            q=q, thickness=thickness, roughness=roughness, sld=sld,
+            sample_length=sample_length, beam_width=beam_width, dq=dq, abeles_func=simulator,
+        )
+    return simulator(
+        q=q, thickness=thickness, roughness=roughness, sld=sld,
+        sample_length=sample_length, beam_width=beam_width, wavelength=wavelength,
+    )
+
+
 _FWHM = 2 * sqrt(2 * log(2.0))
 _2PI_SQRT = 1.0 / sqrt(2 * pi)
 
@@ -168,17 +188,16 @@ def _get_q_axes_for_constant_dq(
     start = q.min(1).values[:, None] - resolutions * 1.7
     end = q.max(1).values[:, None] + resolutions * 1.7
     
-    # Calculate step size based on resolution
-    step = (1.7 * resolutions / gaussgpoint).min()
+    # Each sample's grid spacing must equal its own kernel spacing (±1.7 dq over gaussnum taps,
+    # see _get_t_gauss_kernels). A spacing shared across the batch (set by the smallest dq)
+    # would smear every other sample too little, so a curve's smearing would depend on its batch.
+    step = 1.7 * resolutions / gaussgpoint  # (batch, 1)
     
-    num_pts_needed = ((end.max() - start.min()) / step).ceil().int().item()
+    num_pts_needed = ((end - start) / step).max().ceil().int().item() + 1
     num_pts_needed = max(num_pts_needed, q.shape[1] + 10)
 
-    # We use a shared grid size but per-batch start/end?
-    # Original code used _batch_linspace_with_padding to handle different ranges
-    # Let's simplify to simple linear interp if possible, but keeping original logic structure
-    
-    q_lin = _batch_linspace(start, end, num_pts_needed)
+    # Rows with a coarser step run past their end; the interpolation only reads inside [q.min, q.max].
+    q_lin = start + step * torch.arange(num_pts_needed, device=q.device, dtype=q.dtype)
     q_lin = torch.clamp(q_lin, min=1e-6)
 
     return q_lin

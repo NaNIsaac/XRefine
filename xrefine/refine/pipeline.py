@@ -30,11 +30,14 @@ def calculate_fom(model, params, log_r_obs, config, cutoff):
     device = config.device
     q_grid = config.q_grid.to(device)
     with torch.no_grad():
-        t, r, s = params.assemble_structure()
-        r_sim = model.simulator(q_grid, t, r, s) 
-        i0 = params.i0 if hasattr(params, 'i0') else 1.0
-        bkg = params.bkg if hasattr(params, 'bkg') else -10.0
-        r_sim = r_sim * i0 + (10**bkg)
+        if hasattr(model, 'forward_with_params'):
+            _, r_sim, _ = model.forward_with_params(params)  # the forward model the stages fit with
+        else:
+            t, r, s = params.assemble_structure()
+            r_sim = model.simulator(q_grid, t, r, s)
+            i0 = params.i0 if hasattr(params, 'i0') else 1.0
+            bkg = params.bkg if hasattr(params, 'bkg') else -10.0
+            r_sim = r_sim * i0 + (10**bkg)
         log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
         
         mask = (log_r_obs > LOG_VALID_THRESHOLD) & (q_grid <= cutoff)
@@ -190,6 +193,7 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
     
     # [NEW] Lock I0 after pre-fit
     fitted_i0 = p_current._params['i0'].item() if 'i0' in p_current._params else 1.0
+    i0_fitted = False
 
     for i, stage in enumerate(refine_config.stages):
         stage_name = stage.name
@@ -198,11 +202,15 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
         
         current_stage_config = deepcopy(stage)
         
-        # [NEW] Force I0 to stay fixed at pre-fitted value
-        if 'i0' in current_stage_config.optimize_keys:
-            current_stage_config.optimize_keys = current_stage_config.optimize_keys - {'i0'}
-            logger.info(f"  [I0 Locked] Stage '{stage_name}': i0 fixed at {fitted_i0:.4f}")
-        current_stage_config.fixed_params['i0'] = fitted_i0
+        # The first stage that lists i0 fits it together with the footprint: the pre-fit used the
+        # network's footprint guess, so its i0 absorbs the footprint error. Later stages keep that i0.
+        if 'i0' in current_stage_config.optimize_keys and not i0_fitted:
+            i0_fitted = True
+        else:
+            if 'i0' in current_stage_config.optimize_keys:
+                current_stage_config.optimize_keys = current_stage_config.optimize_keys - {'i0'}
+                logger.info(f"  [I0 Locked] Stage '{stage_name}': i0 fixed at {fitted_i0:.4f}")
+            current_stage_config.fixed_params['i0'] = fitted_i0
         
         # [NEW] Smart-Lock Logic: Relative Bounds Processing
         # Config에 relative_bounds가 정의되어 있으면, 현재 값(p_current) 기준으로 temp_bounds를 생성합니다.
@@ -254,17 +262,20 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
             target_key = current_stage_config.grid_target_key
             if target_key in p_current._params:
                 p_current._params[target_key].fill_(best_val)
-        else:
-            if current_stage_config.q_max is None:
-                current_stage_config.q_max = refine_config.q_cutoff
+        # The grid only places the thickness; the stage's other keys (SLD, resolution) are still
+        # fitted here, or a later Smart-Lock pins them to the network's guess.
+        if current_stage_config.q_max is None:
+            current_stage_config.q_max = refine_config.q_cutoff
 
-            valid_keys = {k for k in current_stage_config.optimize_keys if k in p_current._params}
-            if valid_keys:
-                current_stage_config.optimize_keys = valid_keys
-                p_current = optimize_step(
-                    model, p_current, log_r_obs, xrr_config, current_stage_config, verbose=False
-                )
+        valid_keys = {k for k in current_stage_config.optimize_keys if k in p_current._params}
+        if valid_keys:
+            current_stage_config.optimize_keys = valid_keys
+            p_current = optimize_step(
+                model, p_current, log_r_obs, xrr_config, current_stage_config, verbose=False
+            )
         
+        if 'i0' in p_current._params:
+            fitted_i0 = p_current._params['i0'].item()
         fom_final = calculate_fom(model, p_current, log_r_obs_gpu, xrr_config, refine_config.q_cutoff)
         report_stage_horizontal(stage_name, p_start_stage, p_current, fom_init, fom_final)
 

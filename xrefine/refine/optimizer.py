@@ -102,15 +102,13 @@ def optimize_step(
 
             with torch.no_grad():
                 if hasattr(model, 'forward_with_params'):
-                    _, r_sim, _ = model.forward_with_params(p_set)
+                    _, r_sim, _ = model.forward_with_params(p_set)  # already includes i0 and background
                 else:
                     t, r, s = p_set.assemble_structure()
                     r_sim = model.simulator(xrr_config.q_grid.to(target_device), t, r, s)
-
-                # [FIX] Apply I0 and bkg to simulation result (consistent with optimizer_robust)
-                i0 = p_dict.get('i0', torch.tensor([[1.0]], device=target_device)).item()
-                bkg = p_dict.get('bkg', torch.tensor([[-10.0]], device=target_device)).item()
-                r_sim = r_sim * i0 + (10 ** bkg)
+                    i0 = p_dict.get('i0', torch.tensor([[1.0]], device=target_device)).item()
+                    bkg = p_dict.get('bkg', torch.tensor([[-10.0]], device=target_device)).item()
+                    r_sim = r_sim * i0 + (10 ** bkg)
 
                 loss = loss_fn(r_sim, log_r_obs_gpu, mask)
                 

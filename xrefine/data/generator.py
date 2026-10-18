@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
+from xrefine.core.smearing import instrument_reflectivity
 from xrefine.data.augmentations import XRRAugmentor
 
 
@@ -76,15 +77,7 @@ def generate_synthetic_batch(
         q_batch = q_grid.unsqueeze(0).expand(batch_size, -1)
     else:
         q_batch = q_grid
-        
-    reflectivity = simulator(
-        q=q_batch,
-        thickness=d_stack,
-        roughness=sigma_stack,
-        sld=sld_stack,
-        wavelength=config.instrument.wavelength
-    )
-    
+
     # 3. ParamSet Packaging
     flat_params = {}
     
@@ -120,6 +113,15 @@ def generate_synthetic_batch(
                 f"🚨 Critical Configuration Error: Parameter '{key}' is required by ParamSet but missing in config.sample!\n"
                 f"   Please check your 'config.yaml' under 'sample:' section."
             )
+
+    # The curve goes through the same instrument forward model the models reconstruct with
+    # (2θ offset, footprint, resolution), using the instrument labels just drawn: a label
+    # the data never shows cannot be learned, and the reconstruction would apply it anyway.
+    reflectivity = instrument_reflectivity(
+        q_batch, d_stack, sigma_stack, sld_stack,
+        flat_params["L"], flat_params["beam_width"], flat_params["dq"], flat_params["tth_offset"],
+        simulator, config.instrument.wavelength,
+    )
 
     # ParamSet 생성
     params = ParamSet(
