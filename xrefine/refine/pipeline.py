@@ -262,6 +262,9 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
             target_key = current_stage_config.grid_target_key
             if target_key in p_current._params:
                 p_current._params[target_key].fill_(best_val)
+            # The fit below keeps the thickness inside the grid's window: with a correlation loss a
+            # wide bound lets it jump to a fringe alias several times thicker.
+            current_stage_config.temp_bounds[target_key] = tuple(current_stage_config.grid_range)
         # The grid only places the thickness; the stage's other keys (SLD, resolution) are still
         # fitted here, or a later Smart-Lock pins them to the network's guess.
         if current_stage_config.q_max is None:
