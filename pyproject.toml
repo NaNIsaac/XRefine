@@ -35,3 +35,6 @@ torch = [{ index = "pytorch-cu126" }]
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.ruff]
+line-length = 100
