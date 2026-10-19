@@ -1,5 +1,7 @@
 # XRefine
 
+[![Tests](https://github.com/NaNIsaac/XRefine/actions/workflows/ci.yml/badge.svg)](https://github.com/NaNIsaac/XRefine/actions/workflows/ci.yml)
+
 Superseded by [ReflectoLearn](https://github.com/NaNIsaac/ReflectoLearn).
 
 A neural network that predicts thin-film layer parameters (thickness, roughness, real and imaginary SLD) from X-ray reflectivity (XRR) curves, with a differentiable Abeles simulator in PyTorch used both in the training loss and for gradient-based refinement afterwards.
