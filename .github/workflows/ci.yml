@@ -7,7 +7,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # genx3 needs wxPython, which ships wheels for Windows but must be built from source on Linux.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
