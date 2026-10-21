@@ -1,5 +1,5 @@
 experiment_name: "XRefine_Fourier_Metal_v1"
-save_root: "D:\\03_Resources\\Data\\XRR_AI\\xrefine"
+save_root: "$DATA/XRR_AI/xrefine"
 log_dir: "logs"
 device: "cuda"
 

@@ -1,21 +1,23 @@
-from pathlib import Path
-from datetime import datetime
+import os
 from copy import deepcopy
-from typing import Set, Dict, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Optional, Set
 
-import torch
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import torch
 from scipy.optimize import differential_evolution
 from scipy.signal import find_peaks
 from scipy.stats import qmc
 
 from xrefine.config import CONFIG, XRefineConfig
+from xrefine.core.structures import ParamSet
+from xrefine.logger import logger
 from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
-from xrefine.logger import logger
-from xrefine.core.structures import ParamSet
+
 
 def calculate_r2(y_true: torch.Tensor, y_pred: torch.Tensor, mask: torch.Tensor) -> float:
     """
@@ -444,8 +446,8 @@ def _save_plot(config, y_meas_log, r_ai, r_ref, title, r2, save_path):
 
 if __name__ == "__main__":
     # 경로 설정
-    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\xrefine\v1\best.pt"
-    # DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\KBJ\ALD_A_no_XRR.dat"
-    DATA_FILE = r"D:\03_Resources\Data\XRR_AI\XRR_data\XRR_data\#1_xrr.dat"
+    CHECKPOINT = Path(os.environ["DATA"], r"XRR_AI\xrefine\v1\best.pt")
+    # DATA_FILE = Path(os.environ["DATA"], r"XRR_AI\XRR_data\KBJ\ALD_A_no_XRR.dat")
+    DATA_FILE = Path(os.environ["DATA"], r"XRR_AI\XRR_data\XRR_data\#1_xrr.dat")
     
     run_real_inference(CHECKPOINT, DATA_FILE)

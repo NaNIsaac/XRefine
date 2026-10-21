@@ -1,8 +1,17 @@
+import os
+from pathlib import Path
+from typing import Annotated, List, Literal, Optional, Self
+
 import torch
 import yaml
-from pathlib import Path
-from typing import Literal, Self, Optional, List, Annotated
-from pydantic import BaseModel, Field, ConfigDict, field_validator, field_serializer, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_serializer,
+    field_validator,
+)
 
 from xrefine.physics_utils import tth2q
 
@@ -153,7 +162,7 @@ class XRefineConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra='ignore')
 
     experiment_name: str = 'XRefine_Fourier_Metal_v1'
-    save_root: Path = Path("D:\\03_Resources\\Data\\XRR_AI\\xrefine")
+    save_root: Path = Path("$DATA/XRR_AI/xrefine")
     log_dir: Path = Path("logs")
     
     device: torch.device = Field(
@@ -172,6 +181,11 @@ class XRefineConfig(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
 
     _q_grid_override: Optional[torch.Tensor] = PrivateAttr(default=None)
+
+    @field_validator('save_root', mode='after')
+    def expand_save_root(cls, v: Path) -> Path:
+        # config.yaml stays machine independent: "$DATA/..." resolves per PC
+        return Path(os.path.expandvars(v))
 
     @field_validator('device', mode='before')
     def parse_device(cls, v):

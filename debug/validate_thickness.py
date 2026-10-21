@@ -1,14 +1,16 @@
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
+import os
 from copy import deepcopy
-from scipy.signal import find_peaks, detrend
+from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from scipy.signal import detrend, find_peaks
 from xrefine.config import XRefineConfig
-from xrefine.models import XRR_Fourier_PINN
 from xrefine.core.structures import ParamSet
-from xrefine.predict_real import load_real_data, _optimize_subset
+from xrefine.models import XRR_Fourier_PINN
+from xrefine.predict_real import _optimize_subset, load_real_data
+
 
 class ThicknessValidator:
     def __init__(self, checkpoint_path: str, data_path: str):
@@ -208,6 +210,6 @@ if __name__ == "__main__":
     parser.add_argument('data', type=str)
     args = parser.parse_args()
     
-    CHECKPOINT = r"D:\03_Resources\Data\XRR_AI\xrefine\v1\best.pt"
+    CHECKPOINT = Path(os.environ["DATA"], r"XRR_AI\xrefine\v1\best.pt")
     validator = ThicknessValidator(CHECKPOINT, args.data)
     validator.run_validation()
