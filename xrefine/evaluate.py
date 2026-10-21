@@ -22,6 +22,7 @@ from typing import Dict, Optional, Tuple, List
 from tqdm import tqdm
 
 # [Imports Updated]
+from xrefine.checkpoint import load_checkpoint
 from xrefine.models import get_model
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
@@ -61,7 +62,7 @@ class XRREvaluator:
         logger.info(f"🔍 Initializing Evaluator from {self.checkpoint_path}...")
         
         # 1. Load Checkpoint
-        ckpt = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+        ckpt = load_checkpoint(self.checkpoint_path, map_location=self.device)
         
         # 2. Config Restore
         config_data = ckpt.get('config')

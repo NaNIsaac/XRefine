@@ -12,6 +12,7 @@ from pathlib import Path
 from datetime import datetime
 from copy import deepcopy
 
+from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
 from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
@@ -439,7 +440,7 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
 
 @torch.no_grad()
 def run_real_inference(checkpoint_path, data_path, output_dir="./results", refine_config=None, q_cutoff=None):
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    ckpt = load_checkpoint(checkpoint_path)
     config_data = ckpt.get('config')
     
     # [NEW] Force Anchor Normalization for Safety (User Request)

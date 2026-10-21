@@ -7,6 +7,7 @@ import torch
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
+from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
 from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
@@ -372,7 +373,7 @@ class XRefineTrainer:
             return
 
         try:
-            ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+            ckpt = load_checkpoint(checkpoint_path, map_location=self.device)
             self.model.load_state_dict(ckpt['model_state_dict'])
             self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
             if 'scheduler_state_dict' in ckpt:

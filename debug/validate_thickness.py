@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from scipy.signal import detrend, find_peaks
+from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 from xrefine.models import XRR_Fourier_PINN
@@ -19,7 +20,7 @@ class ThicknessValidator:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Load Model & Config
-        self.ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        self.ckpt = load_checkpoint(checkpoint_path)
         self.config = XRefineConfig(**self.ckpt['config'])
         self.model = XRR_Fourier_PINN(config=self.config).to(self.device)
         self.model.load_state_dict(self.ckpt['model_state_dict'])

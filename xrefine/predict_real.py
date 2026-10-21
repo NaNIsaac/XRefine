@@ -13,6 +13,7 @@ from scipy.signal import find_peaks
 from scipy.stats import qmc
 
 from xrefine.config import CONFIG, XRefineConfig
+from xrefine.checkpoint import load_checkpoint
 from xrefine.core.structures import ParamSet
 from xrefine.logger import logger
 from xrefine.models import get_model
@@ -367,17 +368,7 @@ def three_stage_refinement(model, p_ai: ParamSet, log_r_obs: torch.Tensor, confi
 
 @torch.no_grad()
 def run_real_inference(checkpoint_path: str, data_path: str, output_dir: str = "./results"):
-    # Checkpoint 로드 (Windows Path 호환성 처리 포함)
-    import pathlib
-    temp = pathlib.PosixPath
-    pathlib.PosixPath = pathlib.WindowsPath
-    try:
-        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    except:
-        pathlib.PosixPath = temp
-        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    finally:
-        pathlib.PosixPath = temp
+    ckpt = load_checkpoint(checkpoint_path)
 
     # Load Config from Checkpoint but OVERRIDE ranges from current code
     # (Checking point may have old narrow ranges like sig_f < 5.0)

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, Optional
 
+from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
 from xrefine.models import get_model
 from xrefine.core.structures import ParamSet
@@ -23,7 +24,7 @@ def run_benchmark(
     save_dir: str = "./benchmark_results"
 ):
     # 1. Load Setup
-    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    ckpt = load_checkpoint(checkpoint_path)
     config_data = ckpt.get('config')
     if isinstance(config_data, dict):
         config = XRefineConfig(**config_data)
