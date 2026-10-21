@@ -74,3 +74,7 @@ debug/                      one-off debugging scripts
 scripts/                    baseline vs enhanced comparison
 tests/                      gradient tests for the enhanced model
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
