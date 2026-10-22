@@ -19,6 +19,12 @@ Python 3.13 and [uv](https://docs.astral.sh/uv/). `torch==2.9.0` is pulled from 
 ```bash
 git clone https://github.com/NaNIsaac/XRefine.git
 cd XRefine
+```
+
+Install the dependencies (tested on Windows only: `genx3` needs wxPython, which has no Linux wheel):
+
+<!-- test windows -->
+```bash
 uv sync
 ```
 
