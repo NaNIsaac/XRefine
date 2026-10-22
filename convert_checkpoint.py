@@ -1,9 +1,10 @@
+import argparse
+import pathlib
+import shutil
+from pathlib import Path
 
 import torch
-import pathlib
-from pathlib import Path
-import argparse
-import shutil
+
 
 def convert_checkpoint(ckpt_path: str, output_path: str = None):
     """
@@ -17,31 +18,31 @@ def convert_checkpoint(ckpt_path: str, output_path: str = None):
 
     if output_path is None:
         output_path = src_path.with_name(src_path.stem + "_win" + src_path.suffix)
-    
+
     print(f"🔄 Converting: {src_path} -> {output_path}")
 
     # 1. PosixPath 해킹: 로드 시 WindowsPath로 매핑
     temp = pathlib.PosixPath
     pathlib.PosixPath = pathlib.WindowsPath
-    
+
     try:
         # weights_only=False unpickles anything in the file, so convert only checkpoints you
         # made yourself. The result holds plain values and loads with weights_only=True.
-        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     except Exception as e:
         print(f"❌ Load Failed: {e}")
         return
     finally:
-        pathlib.PosixPath = temp # 복구
+        pathlib.PosixPath = temp  # 복구
 
     # 2. Config 내부의 Path 객체 순회 및 변환 (필요시)
     # 이미 로드될 때 WindowsPath로 변환되었겠지만, 명시적으로 문자열로 바꾸는 것이 가장 안전함
-    if 'config' in ckpt:
+    if "config" in ckpt:
         print("   Processing config dict...")
-        cfg = ckpt['config']
-        if hasattr(cfg, 'model_dump'):
+        cfg = ckpt["config"]
+        if hasattr(cfg, "model_dump"):
             # An older checkpoint pickled the XRefineConfig object itself.
-            cfg = ckpt['config'] = cfg.model_dump(mode='json')
+            cfg = ckpt["config"] = cfg.model_dump(mode="json")
         for k, v in cfg.items():
             if isinstance(v, Path):
                 cfg[k] = str(v)  # Path -> String 변환 (가장 호환성 높음)
@@ -51,9 +52,10 @@ def convert_checkpoint(ckpt_path: str, output_path: str = None):
     torch.save(ckpt, output_path)
     print("✅ Conversion Complete!")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert Linux Checkpoint to Windows")
     parser.add_argument("checkpoint", help="Path to the input .pt file")
-    
+
     args = parser.parse_args()
     convert_checkpoint(args.checkpoint)

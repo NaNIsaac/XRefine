@@ -2,10 +2,11 @@ import torch
 from tqdm import tqdm
 
 from xrefine.config import CONFIG
-from xrefine.models.fourier_model import FourierConvPINN
-from xrefine.data.generator import generate_synthetic_batch
 from xrefine.data.augmentations import XRRAugmentor
+from xrefine.data.generator import generate_synthetic_batch
+from xrefine.models.fourier_model import FourierConvPINN
 from xrefine.train_utils import XRRWeightedLoss, save_pinn_report
+
 
 def debug_overfit():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -15,9 +16,9 @@ def debug_overfit():
     config = CONFIG.model_copy()
     config.model.n_layers = 1
     config.train.batch_size = 1
-    config.train.lr = 5e-4 
+    config.train.lr = 5e-4
     config.device = str(device)
-    
+
     # SLD 가중치 강화를 통한 오버피팅 유도 (Config 필드 직접 수정)
     config.train.weights.rho_f = 5.0
     config.train.weights.rho_ox = 5.0
@@ -38,12 +39,12 @@ def debug_overfit():
     model = FourierConvPINN(config=config, device=str(device)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr, weight_decay=1e-4)
     criterion = XRRWeightedLoss(q_grid)
-    
+
     input_log_r = torch.log10(torch.clamp(r_target, min=1e-11))
-    
+
     losses = []
     model.train()
-    
+
     print("🚀 Starting PINN Overfit Test (2000 steps)...")
     pbar = tqdm(range(2000))
     for step in pbar:
@@ -54,8 +55,13 @@ def debug_overfit():
 
         # Loss 계산
         total_loss, l_recon, l_param, p_phys = criterion(
-            params_pred, r_recon, input_log_r, 
-            params_true, config, curr_sup_w=100.0, phys_penalty=phys_penalty
+            params_pred,
+            r_recon,
+            input_log_r,
+            params_true,
+            config,
+            curr_sup_w=100.0,
+            phys_penalty=phys_penalty,
         )
 
         total_loss.backward()
@@ -65,7 +71,7 @@ def debug_overfit():
 
         losses.append(total_loss.item())
         if step % 10 == 0:
-            pbar.set_postfix({'Loss': f"{total_loss.item():.6f}", 'Recon': f"{l_recon.item():.6f}"})
+            pbar.set_postfix({"Loss": f"{total_loss.item():.6f}", "Recon": f"{l_recon.item():.6f}"})
 
     # 4. 결과 검증 및 리포트 저장
     model.eval()
@@ -84,11 +90,12 @@ def debug_overfit():
         loss_history=losses,
         params_pred=final_params,
         params_true=params_true,
-        save_path='debug_overfit_pinn.png',
-        step=2000
+        save_path="debug_overfit_pinn.png",
+        step=2000,
     )
-    
+
     print("📊 Visualization saved to debug_overfit_pinn.png")
+
 
 if __name__ == "__main__":
     debug_overfit()

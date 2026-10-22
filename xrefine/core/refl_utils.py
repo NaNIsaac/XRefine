@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from math import sqrt, pi
+from math import pi, sqrt
 
 import numpy as np
-from numpy import ndarray
-
 import torch
+from numpy import ndarray
 from torch import Tensor
 
 __all__ = [
@@ -84,9 +83,7 @@ def get_reversed_params(thicknesses: Tensor, roughnesses: Tensor, slds: Tensor):
     )
     reversed_thicknesses = torch.flip(thicknesses, [-1])
     reversed_roughnesses = torch.flip(roughnesses, [-1])
-    reversed_params = torch.cat(
-        [reversed_thicknesses, reversed_roughnesses, reversed_slds], -1
-    )
+    reversed_params = torch.cat([reversed_thicknesses, reversed_roughnesses, reversed_slds], -1)
 
     return reversed_params
 
@@ -122,9 +119,7 @@ def get_param_labels(
             label = label + " " + unit_template % units
         return label
 
-    thickness_labels = [
-        _label_str(i, thickness_name, thickness_units) for i in range(num_layers)
-    ]
+    thickness_labels = [_label_str(i, thickness_name, thickness_units) for i in range(num_layers)]
     roughness_labels = [
         _label_str(i, roughness_name, roughness_units) for i in range(num_layers + 1)
     ]
@@ -183,7 +178,11 @@ def _get_erf(z, z0, sigma, amp):
 
 
 def _get_gauss(z, z0, sigma, amp):
-    return amp / ((sigma + 1e-8) * sqrt(2 * pi)) * torch.exp(-((z - z0) ** 2) / 2 / (sigma + 1e-8)**2)
+    return (
+        amp
+        / ((sigma + 1e-8) * sqrt(2 * pi))
+        * torch.exp(-((z - z0) ** 2) / 2 / (sigma + 1e-8) ** 2)
+    )
 
 
 def angle_to_q(scattering_angle: ndarray | float, wavelength: float):

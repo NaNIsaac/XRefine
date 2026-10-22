@@ -1,7 +1,7 @@
-from pathlib import Path
-from typing import Optional
 import shutil
 import time
+from pathlib import Path
+from typing import Optional
 
 import torch
 import torch.optim as optim
@@ -9,22 +9,25 @@ from torch.utils.tensorboard import SummaryWriter
 
 from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
-from xrefine.data.generator import generate_synthetic_batch
-from xrefine.data.augmentations import XRRAugmentor
-from xrefine.train.utils import XRRWeightedLoss, save_pinn_report
 from xrefine.core.abeles import AbelesMatrix
+from xrefine.data.augmentations import XRRAugmentor
+from xrefine.data.generator import generate_synthetic_batch
 from xrefine.logger import logger
+from xrefine.train.utils import XRRWeightedLoss, save_pinn_report
 
 # PyTorch 2.9+ 최적화 설정
 torch.backends.cudnn.benchmark = True
+
 
 # Colab 환경 감지
 def is_colab() -> bool:
     try:
         import google.colab
+
         return True
     except ImportError:
         return False
+
 
 IN_COLAB = is_colab()
 
@@ -35,6 +38,7 @@ from tqdm import tqdm
 if IN_COLAB:
     from IPython.display import clear_output
 
+
 def log_epoch(msg: str):
     """tqdm과 충돌하지 않게 로그 출력"""
     tqdm.write(msg)
@@ -44,7 +48,7 @@ class XRefineTrainer:
     def __init__(self, model, config: XRefineConfig):
         self.cfg = config
         self.device = torch.device(config.device)
-        
+
         # 모델 및 그리드 설정
         self.model = model.to(self.device)
         self.q_grid = config.q_grid.to(self.device)
@@ -56,9 +60,7 @@ class XRefineTrainer:
 
         # 최적화 설정
         self.optimizer = optim.AdamW(
-            self.model.parameters(), 
-            lr=config.train.lr, 
-            weight_decay=config.train.weight_decay
+            self.model.parameters(), lr=config.train.lr, weight_decay=config.train.weight_decay
         )
         # 스케줄러
         self.scheduler = optim.lr_scheduler.OneCycleLR(
@@ -66,11 +68,11 @@ class XRefineTrainer:
             max_lr=config.train.lr,
             steps_per_epoch=config.train.steps_per_epoch,
             epochs=config.train.epochs,
-            pct_start=0.1
+            pct_start=0.1,
         )
         # [FIX] OneCycleLR 경고 방지: dummy optimizer step 수행
         self.optimizer.step()
-        self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
+        self.scaler = torch.amp.GradScaler("cuda") if self.device.type == "cuda" else None
 
         # [COLAB OPT] 로컬 저장 경로 vs Drive 백업 경로
         self.drive_save_dir = Path(config.save_root) / config.experiment_name
@@ -81,14 +83,14 @@ class XRefineTrainer:
             self.backup_interval = 30 * 60  # 30분
         else:
             self.save_dir = self.drive_save_dir
-            
+
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.drive_save_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(self.save_dir / "logs"))
-        
+
         # 상태 관리
         self.start_epoch = 0
-        self.best_val_loss = float('inf')
+        self.best_val_loss = float("inf")
         self.patience_counter = 0  # Early stopping 카운터
         self.history = {"train_loss": [], "val_loss": [], "lr": [], "sup_weight": []}
 
@@ -101,23 +103,23 @@ class XRefineTrainer:
 
     def train_epoch(self, epoch: int, curr_sup_w: float):
         # [ENHANCED] Support curriculum learning in enhanced models
-        if hasattr(self.model, 'set_epoch'):
+        if hasattr(self.model, "set_epoch"):
             self.model.set_epoch(epoch)
-        
+
         self.model.train()
         total_loss = 0.0
         # 모니터링용 누적 변수 추가
-        total_param_loss = 0.0 
-        
+        total_param_loss = 0.0
+
         steps = self.cfg.train.steps_per_epoch
         pbar = tqdm(
-            range(steps), 
-            desc=f"Epoch {epoch:03d}", 
+            range(steps),
+            desc=f"Epoch {epoch:03d}",
             leave=False,
             total=steps,
             ncols=100,
             ascii=" >=",
-            mininterval=1.0
+            mininterval=1.0,
         )
 
         for step in pbar:
@@ -127,13 +129,13 @@ class XRefineTrainer:
                 batch_size=self.cfg.train.batch_size,
                 config=self.cfg,
                 simulator=self.simulator,
-                augmenter=self.augmenter
+                augmenter=self.augmenter,
             )
 
             log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-11))
             self.optimizer.zero_grad()
 
-            with torch.amp.autocast('cuda', enabled=self.scaler is not None):
+            with torch.amp.autocast("cuda", enabled=self.scaler is not None):
                 # 2. Forward Pass (FIXED)
                 # [중요] 학습 시에는 fixed_values=None으로 설정하여 신경망이 직접 예측하게 함
                 # p_true를 넣으면 정답을 베끼게 되어 학습이 안 됨 (Loss=0)
@@ -151,14 +153,13 @@ class XRefineTrainer:
                 # 4. Criterion Calling (FIXED)
                 # [중요] loss_param을 언패킹하여 모니터링에 사용
                 loss_main, _, _, _, loss_param = self.criterion(
-                    p_pred, r_recon, log_r_obs, p_true, 
-                    self.cfg, curr_sup_w, phys_penalty
+                    p_pred, r_recon, log_r_obs, p_true, self.cfg, curr_sup_w, phys_penalty
                 )
 
                 loss = loss_main + kl_loss
 
             if not torch.isfinite(loss):
-                return float('nan')
+                return float("nan")
 
             # 5. Backward
             if self.scaler:
@@ -167,10 +168,10 @@ class XRefineTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                
+
                 # OneCycleLR Scale safe-guard
                 current_scale = self.scaler.get_scale()
-                skip_lr_sched = (current_scale > self.scaler.get_scale())
+                skip_lr_sched = current_scale > self.scaler.get_scale()
                 if not skip_lr_sched:
                     self.scheduler.step()
             else:
@@ -180,15 +181,17 @@ class XRefineTrainer:
                 self.scheduler.step()
 
             total_loss += loss.item()
-            total_param_loss += loss_param.item() # 누적
+            total_param_loss += loss_param.item()  # 누적
 
             if step % 10 == 0:
-                pbar.set_postfix({
-                    "L": f"{loss.item():.4f}", 
-                    "P_L": f"{loss_param.item():.4f}", # Param Loss 표시
-                    "KL": f"{kl_loss.item():.4f}",
-                    "LR": f"{self.scheduler.get_last_lr()[0]:.2e}"
-                })
+                pbar.set_postfix(
+                    {
+                        "L": f"{loss.item():.4f}",
+                        "P_L": f"{loss_param.item():.4f}",  # Param Loss 표시
+                        "KL": f"{kl_loss.item():.4f}",
+                        "LR": f"{self.scheduler.get_last_lr()[0]:.2e}",
+                    }
+                )
 
         return total_loss / steps
 
@@ -198,11 +201,11 @@ class XRefineTrainer:
 
         # 1. 검증 데이터 생성
         r_meas, p_true = generate_synthetic_batch(
-            batch_size=self.cfg.train.batch_size, 
-            q_grid=self.q_grid, 
-            config=self.cfg, 
+            batch_size=self.cfg.train.batch_size,
+            q_grid=self.q_grid,
+            config=self.cfg,
             simulator=self.simulator,  # Cached
-            augmenter=self.augmenter
+            augmenter=self.augmenter,
         )
 
         log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-15))
@@ -214,7 +217,7 @@ class XRefineTrainer:
         # 3. VAE KL Loss Calculation
         kl_loss = 0.0
         phys_penalty = torch.tensor(0.0, device=self.device)
-        
+
         if isinstance(aux_output, tuple):
             mu, logvar, phys_penalty = aux_output
             kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
@@ -225,40 +228,43 @@ class XRefineTrainer:
         # 4. Loss Calculation (FIXED Unpacking)
         # XRRWeightedLoss returns: (total, base, fringe, qc, param)
         loss_main, _, _, _, loss_param = self.criterion(
-            p_pred, r_recon, log_r_obs, p_true, 
-            self.cfg, curr_sup_w, phys_penalty
+            p_pred, r_recon, log_r_obs, p_true, self.cfg, curr_sup_w, phys_penalty
         )
 
         metrics = {
             "loss": loss_main.item() + kl_loss,
             "loss_param": loss_param.item() if isinstance(loss_param, torch.Tensor) else loss_param,
-            "kl_loss": kl_loss
+            "kl_loss": kl_loss,
         }
-        
+
         # [FIX] Return signature updated: p_true added
         return metrics, p_pred, r_recon, log_r_obs, p_true
 
     def fit(self, resume: bool = False):
         if resume:
             self.load_checkpoint()
-            
+
         max_epochs = self.cfg.train.epochs
-        patience = getattr(self.cfg.train, 'early_stop_patience', 0)
-        logger.info(f"Session Start: {self.cfg.experiment_name} | Device: {self.device} | Early Stop: {patience}")
+        patience = getattr(self.cfg.train, "early_stop_patience", 0)
+        logger.info(
+            f"Session Start: {self.cfg.experiment_name} | Device: {self.device} | Early Stop: {patience}"
+        )
 
         try:
             for epoch in range(self.start_epoch, max_epochs):
                 curr_w = self._get_curriculum_weight(epoch)
-                
+
                 avg_train_loss = self.train_epoch(epoch, curr_w)
-                val_metrics, v_pred, v_recon, v_target, v_true = self.validate(curr_w)  # p_true 추가
+                val_metrics, v_pred, v_recon, v_target, v_true = self.validate(
+                    curr_w
+                )  # p_true 추가
                 val_loss = val_metrics["loss"]
-                
+
                 self.history["train_loss"].append(avg_train_loss)
                 self.history["val_loss"].append(val_loss)
                 self.history["lr"].append(self.scheduler.get_last_lr()[0])
                 self.history["sup_weight"].append(curr_w)
-                
+
                 self.writer.add_scalar("Loss/Train", avg_train_loss, epoch)
                 self.writer.add_scalar("Loss/Val", val_loss, epoch)
                 self.writer.add_scalar("Loss/Val_Param", val_metrics["loss_param"], epoch)
@@ -267,7 +273,7 @@ class XRefineTrainer:
                 self.writer.add_scalar("Meta/LR", self.scheduler.get_last_lr()[0], epoch)
 
                 self._save_checkpoint("last.pt", epoch)
-                
+
                 # Early Stopping Logic
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
@@ -277,43 +283,53 @@ class XRefineTrainer:
                     self.patience_counter += 1
 
                 # Report at: every 50 epochs, epoch 0, or last epoch
-                is_final = (epoch == max_epochs - 1)
-                is_best = (val_loss < self.best_val_loss) # Note: best_val_loss is updated above
+                is_final = epoch == max_epochs - 1
+                is_best = val_loss < self.best_val_loss  # Note: best_val_loss is updated above
                 should_report = (epoch % 50 == 0) or is_final or is_best
-                
+
                 if should_report:
                     # [Performance] Only save file if best or final. Otherwise just TensorBoard.
                     save_path = None
                     if is_best or is_final:
                         save_path = self.save_dir / f"report_E{epoch:03d}.png"
-                    
+
                     fig = save_pinn_report(
-                        self.q_grid, 
+                        self.q_grid,
                         v_target[0:1],
-                        v_recon[0:1], 
-                        self.history["train_loss"], 
-                        v_pred, 
+                        v_recon[0:1],
+                        self.history["train_loss"],
+                        v_pred,
                         v_true,  # p_true 전달
-                        save_path=save_path, # Can be None
-                        step=epoch
+                        save_path=save_path,  # Can be None
+                        step=epoch,
                     )
-                    
+
                     if fig:
                         self.writer.add_figure("Validation/Fit", fig, epoch)
                         import matplotlib.pyplot as plt
+
                         plt.close(fig)
 
                 # Logging with more info (tqdm.write로 출력해서 프로그레스바와 충돌 방지)
                 lr_now = self.scheduler.get_last_lr()[0]
-                log_epoch(f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}")
+                log_epoch(
+                    f"E{epoch:03d} | Loss: {val_loss:.4f} | Best: {self.best_val_loss:.4f} | LR: {lr_now:.2e} | Patience: {self.patience_counter}/{patience}"
+                )
 
                 # Early Stop Check
                 if patience > 0 and self.patience_counter >= patience:
-                    logger.warning(f"Early stopping triggered at epoch {epoch}. No improvement for {patience} epochs.")
+                    logger.warning(
+                        f"Early stopping triggered at epoch {epoch}. No improvement for {patience} epochs."
+                    )
                     save_pinn_report(
-                        self.q_grid, v_target[0:1], v_recon[0:1], 
-                        self.history["train_loss"], v_pred, v_true, 
-                        self.save_dir / f"report_FINAL_E{epoch:03d}.png", step=epoch
+                        self.q_grid,
+                        v_target[0:1],
+                        v_recon[0:1],
+                        self.history["train_loss"],
+                        v_pred,
+                        v_true,
+                        self.save_dir / f"report_FINAL_E{epoch:03d}.png",
+                        step=epoch,
                     )
                     self.backup_to_drive(force=True)  # Early stop 시 강제 백업
                     break
@@ -323,14 +339,14 @@ class XRefineTrainer:
 
         except KeyboardInterrupt:
             logger.warning("⚠️ KeyboardInterrupt detected! Emergency saving...")
-            self._save_checkpoint("emergency_interrupt.pt", epoch if 'epoch' in dir() else 0)
+            self._save_checkpoint("emergency_interrupt.pt", epoch if "epoch" in dir() else 0)
             self.backup_to_drive(force=True)
             logger.info("✅ Emergency backup complete.")
             raise
         except Exception as e:
             logger.error(f"❌ Error during training: {e}")
             try:
-                self._save_checkpoint("emergency_error.pt", epoch if 'epoch' in dir() else 0)
+                self._save_checkpoint("emergency_error.pt", epoch if "epoch" in dir() else 0)
                 self.backup_to_drive(force=True)
                 logger.info("✅ Emergency backup complete.")
             except:
@@ -342,21 +358,24 @@ class XRefineTrainer:
 
     def _save_checkpoint(self, name: str, epoch: int):
         save_path = self.save_dir / name
-        config_dump = self.cfg.model_dump(mode='json')
-        
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'best_val_loss': self.best_val_loss,
-            'config': config_dump, 
-            'history': self.history
-        }, save_path)
+        config_dump = self.cfg.model_dump(mode="json")
 
-    def load_checkpoint(self, path: Optional[Path] = None):
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict(),
+                "best_val_loss": self.best_val_loss,
+                "config": config_dump,
+                "history": self.history,
+            },
+            save_path,
+        )
+
+    def load_checkpoint(self, path: Path | None = None):
         checkpoint_path = path or (self.save_dir / "last.pt")
-        
+
         # [COLAB FIX] 로컬에 없으면 Drive에서 복원
         if IN_COLAB and not checkpoint_path.exists():
             drive_ckpt = self.drive_save_dir / "last.pt"
@@ -367,21 +386,21 @@ class XRefineTrainer:
                 drive_best = self.drive_save_dir / "best.pt"
                 if drive_best.exists():
                     shutil.copy2(drive_best, self.save_dir / "best.pt")
-        
+
         if not checkpoint_path.exists():
             logger.warning(f"No checkpoint found at {checkpoint_path}. Starting fresh.")
             return
 
         try:
             ckpt = load_checkpoint(checkpoint_path, map_location=self.device)
-            self.model.load_state_dict(ckpt['model_state_dict'])
-            self.optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            if 'scheduler_state_dict' in ckpt:
-                self.scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-            
-            self.start_epoch = ckpt['epoch'] + 1
-            self.best_val_loss = ckpt.get('best_val_loss', float('inf'))
-            self.history = ckpt.get('history', self.history)
+            self.model.load_state_dict(ckpt["model_state_dict"])
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            if "scheduler_state_dict" in ckpt:
+                self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+
+            self.start_epoch = ckpt["epoch"] + 1
+            self.best_val_loss = ckpt.get("best_val_loss", float("inf"))
+            self.history = ckpt.get("history", self.history)
             logger.info(f"Checkpoint Loaded: Resume from Epoch {self.start_epoch}")
         except RuntimeError as e:
             logger.warning(f"⚠️  [Incompatible Checkpoint] Structure mismatch detected: {e}")
@@ -396,14 +415,14 @@ class XRefineTrainer:
         """[COLAB] 로컬 체크포인트를 Drive로 백업"""
         if not IN_COLAB:
             return
-        
+
         now = time.time()
         if not force and (now - self.last_backup_time) < self.backup_interval:
             return
-        
+
         self.last_backup_time = now
         try:
-            logger.info("⏳ Starting Drive backup...") # [DEBUG]
+            logger.info("⏳ Starting Drive backup...")  # [DEBUG]
             # 주요 파일만 백업 (last.pt, best.pt)
             for fname in ["last.pt", "best.pt"]:
                 src = self.save_dir / fname
@@ -417,7 +436,7 @@ class XRefineTrainer:
         """학습 종료 후 모든 파일을 Drive로 복사"""
         if not IN_COLAB:
             return
-        
+
         try:
             # 전체 디렉토리 복사
             if self.save_dir.exists():

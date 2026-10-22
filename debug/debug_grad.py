@@ -1,5 +1,7 @@
 import torch
+
 from xrefine.core.abeles import abeles
+
 
 def check_gradients():
     # 학습 중 발생할 수 있는 극단적인 값 설정
@@ -11,7 +13,7 @@ def check_gradients():
     # Forward
     r = abeles(q, thick, rough, sld)
     loss = r.sum()
-    
+
     # Backward
     loss.backward()
 
@@ -21,6 +23,7 @@ def check_gradients():
 
     if torch.isnan(thick.grad) or thick.grad.abs() > 1e6:
         print("⚠️ Gradient is exploding or NaN!")
+
 
 if __name__ == "__main__":
     check_gradients()

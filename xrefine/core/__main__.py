@@ -12,11 +12,7 @@ roughness = torch.tensor([[3.0, 2.0]]).to(device)
 sld = torch.tensor([[20.0, 10.0, 0.0]]).to(device)
 
 R = Simulator().simulate(
-    q=q,
-    thickness=thickness,
-    roughness=roughness,
-    sld=sld,
-    dq_q=torch.tensor([[0.02]]).to(device)
+    q=q, thickness=thickness, roughness=roughness, sld=sld, dq_q=torch.tensor([[0.02]]).to(device)
 )
 
 R_numpy = R.detach().cpu().numpy()

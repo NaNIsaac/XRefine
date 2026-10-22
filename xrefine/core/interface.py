@@ -7,16 +7,17 @@ from torch import Tensor
 from .abeles import abeles
 from .kinematical import kinematical_approximation
 from .smearing import abeles_constant_smearing
-from .structures import Sample, Instrument
+from .structures import Instrument, Sample
 
 
 class Simulator(nn.Module):
     """
     Differentiable X-ray Reflectivity Simulator.
-    
+
     Supports both dynamic calculation (standard XRR) and optimization (PINN/fitting).
     """
-    def __init__(self, method: str = 'abeles', device: str | torch.device = 'cpu'):
+
+    def __init__(self, method: str = "abeles", device: str | torch.device = "cpu"):
         super().__init__()
         self.method = method
         self.device = torch.device(device)
@@ -30,18 +31,18 @@ class Simulator(nn.Module):
         sample_length: Tensor,
         beam_width: Tensor,
         dq: Tensor | None = None,
-        **kwargs
+        **kwargs,
     ) -> Tensor:
         """
         Calculate reflectivity.
-        
+
         Args:
             q: Scattering vector (inverse Angstroms).
             thickness: Layer thicknesses.
             roughness: Interface roughnesses.
             sld: Scattering length densities.
             dq: Resolution (delta q) for smearing. If None, no smearing is applied.
-            
+
         Returns:
             Reflectivity R(q).
         """
@@ -51,26 +52,31 @@ class Simulator(nn.Module):
         roughness = roughness.to(self.device)
         sld = sld.to(self.device)
         L, W = sample_length.to(self.device), beam_width.to(self.device)
-        if self.method == 'abeles':
+        if self.method == "abeles":
             if dq is not None:
                 if not torch.is_tensor(dq):
                     dq = torch.tensor([[dq]], device=self.device, dtype=q.dtype)
                 else:
                     dq = dq.to(self.device)
-                return abeles_constant_smearing(q, thickness, roughness, sld,
-                                                sample_length=L, beam_width=W, dq=dq, **kwargs)
+                return abeles_constant_smearing(
+                    q, thickness, roughness, sld, sample_length=L, beam_width=W, dq=dq, **kwargs
+                )
             else:
                 return abeles(q, thickness, roughness, sld, L, W)
-        elif self.method == 'kinematical':
+        elif self.method == "kinematical":
             return kinematical_approximation(q, thickness, roughness, sld, **kwargs)
         else:
             raise ValueError(f"Unknown method: {self.method}")
 
-    def simulate_sample(self, q: Tensor, sample: Sample, instrument: Instrument | None = None) -> Tensor:
+    def simulate_sample(
+        self, q: Tensor, sample: Sample, instrument: Instrument | None = None
+    ) -> Tensor:
         """
         Simulate reflectivity for a Sample object.
         """
-        thickness, roughness, sld = sample.to_tensor(device=self.device, batch_size=q.shape[0] if q.dim() > 1 else 1)
+        thickness, roughness, sld = sample.to_tensor(
+            device=self.device, batch_size=q.shape[0] if q.dim() > 1 else 1
+        )
 
         dq = None
         if instrument is not None and instrument.res > 0:
