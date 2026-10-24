@@ -25,7 +25,8 @@ def convert_checkpoint(ckpt_path: str, output_path: str = None):
     pathlib.PosixPath = pathlib.WindowsPath
     
     try:
-        # weights_only=False는 구조체(Config 객체 등) 로딩을 위해 필요
+        # weights_only=False unpickles anything in the file, so convert only checkpoints you
+        # made yourself. The result holds plain values and loads with weights_only=True.
         ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
     except Exception as e:
         print(f"❌ Load Failed: {e}")
@@ -38,6 +39,9 @@ def convert_checkpoint(ckpt_path: str, output_path: str = None):
     if 'config' in ckpt:
         print("   Processing config dict...")
         cfg = ckpt['config']
+        if hasattr(cfg, 'model_dump'):
+            # An older checkpoint pickled the XRefineConfig object itself.
+            cfg = ckpt['config'] = cfg.model_dump(mode='json')
         for k, v in cfg.items():
             if isinstance(v, Path):
                 cfg[k] = str(v)  # Path -> String 변환 (가장 호환성 높음)

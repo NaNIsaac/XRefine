@@ -53,8 +53,10 @@ Other scripts:
 ```bash
 uv run python -m xrefine.refine.benchmark -c path/to/best.pt -n 3 -o ./benchmark_results   # refine one fixed + n random synthetic cases
 uv run python -m xrefine.hpo --db hpo_fourier.db --trials 100                               # Optuna search for fourier_conv
-uv run python convert_checkpoint.py path/to/best.pt                                         # Linux checkpoint -> best_win.pt loadable on Windows
+uv run python convert_checkpoint.py path/to/best.pt                                         # older or Linux checkpoint -> best_win.pt
 ```
+
+Checkpoints are loaded with `torch.load(weights_only=True)`, so a file holding pickled Python objects is refused instead of run. Those are checkpoints from before the config was stored as JSON, or with Linux paths in them; convert one you made yourself with `convert_checkpoint.py`.
 
 ## Structure
 
