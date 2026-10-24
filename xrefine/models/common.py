@@ -1,10 +1,9 @@
-"""
-Common Components for PINN Models
+"""Common Components for PINN Models
 ==================================
-중복 제거를 위한 공통 모듈:
+Shared modules to avoid duplication:
 - FourierFeatureMapping: Random Fourier Feature Encoding
 - PositionalEncoding: Sinusoidal Position Embedding
-- BasePINNModel: PINN 모델의 공통 인터페이스
+- BasePINNModel: common interface of the PINN models
 """
 
 import math
@@ -20,10 +19,6 @@ from xrefine.core.abeles import AbelesMatrix
 from xrefine.core.smearing import instrument_reflectivity
 from xrefine.core.structures import ParamSet  # Aliased DynamicParamSet
 from xrefine.data.normalization import apply_normalization_tensor
-
-# ==============================================================================
-# 1. Feature Encoding Modules
-# ==============================================================================
 
 
 class FourierFeatureMapping(nn.Module):
@@ -72,15 +67,8 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, : x.size(1), :]
 
 
-# ==============================================================================
-# 2. Base PINN Model (Abstract)
-# ==============================================================================
-
-
 class BasePINNModel(nn.Module, ABC):
-    """
-    PINN 모델의 공통 인터페이스 (Dynamic Refactor).
-    """
+    """Common interface of the PINN models."""
 
     def __init__(self, config: XRefineConfig):
         super().__init__()
@@ -99,25 +87,20 @@ class BasePINNModel(nn.Module, ABC):
         """
         mapping = []
 
-        # 1. Layers
         for layer in config.sample.layers:
             mapping.append((f"{layer.name}.thickness", layer.thickness))
             mapping.append((f"{layer.name}.roughness", layer.roughness))
             mapping.append((f"{layer.name}.sld", layer.sld))
 
-            # [FIX] sld_imag (Absorption) 추가 확인
             if getattr(layer, "sld_imag", None) is not None:
                 mapping.append((f"{layer.name}.sld_imag", layer.sld_imag))
 
-        # 2. Substrate
         mapping.append(("Substrate.roughness", config.sample.substrate.roughness))
         mapping.append(("Substrate.sld", config.sample.substrate.sld))
 
-        # [FIX] Substrate sld_imag 추가 확인
         if getattr(config.sample.substrate, "sld_imag", None) is not None:
             mapping.append(("Substrate.sld_imag", config.sample.substrate.sld_imag))
 
-        # 3. Instrument (Global)
         for key in ParamSet.INSTRUMENT_KEYS:
             if hasattr(config.sample, key):
                 rng = getattr(config.sample, key)
@@ -147,23 +130,20 @@ class BasePINNModel(nn.Module, ABC):
 
         params_dict = {}
 
-        # 1. Base: Convert Network Predictions to Physical Values
         for (key, (p_min, p_max)), val in zip(self.param_map, vals, strict=False):
             # val: (B, 1) Normalized 0~1
             physical_val = val * (p_max - p_min) + p_min
             params_dict[key] = physical_val
 
-        # 2. Override: Apply Fixed Value Constraints
+        # fixed values override the predictions
         if fixed_values is not None:
-            # DynamicParamSet 내부 딕셔너리 순회
             for key, target_val in fixed_values._params.items():
                 if key in params_dict:
-                    # 배치 사이즈 브로드캐스팅 (1 -> B)
                     if target_val.size(0) == 1 and batch_size > 1:
                         target_val = target_val.expand(batch_size, -1)
 
-                    # [Core Logic] 예측값 덮어쓰기
-                    # 이 시점에서 해당 파라미터는 신경망의 Computational Graph에서 분리됩니다.
+                    # overwrite the prediction; this parameter is detached from the network's
+                    # computational graph
                     params_dict[key] = target_val
 
         # Order of layer names for assembly
@@ -248,11 +228,6 @@ class BasePINNModel(nn.Module, ABC):
         penalty = self.validate_physics(params)
 
         return params, r_final, penalty
-
-
-# ==============================================================================
-# 3. Patch Embedding
-# ==============================================================================
 
 
 class PatchEmbed1D(nn.Module):

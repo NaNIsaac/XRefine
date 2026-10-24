@@ -16,8 +16,8 @@ plt.switch_backend("Agg")
 class XRRWeightedLoss(nn.Module):
     def __init__(self, q_grid: torch.Tensor):
         super().__init__()
-        # [사용자 제안 반영] 모든 Q 영역에 동일한 가중치(1.0) 부여
-        # 로그 스케일에서는 이미 스케일이 평탄화되어 있어 균등 가중치가 물리적으로 타당함
+        # equal weight (1.0) in all Q regions: the log scale already flattens the dynamic range, so
+        # uniform weights are physically reasonable
         weights = torch.full_like(q_grid, 1.0)
 
         self.register_buffer("q_weights", weights.unsqueeze(0))
@@ -34,18 +34,16 @@ class XRRWeightedLoss(nn.Module):
         phys_penalty: torch.Tensor,
     ):
 
-        # 1. 마스킹 및 전처리
         mask = (log_r_target > -10.0).float()
         valid_points = mask.sum() + 1e-9
         log_r_recon = torch.log10(torch.clamp(r_recon, min=1e-11))
 
-        # 2. 크리티컬 엥글(Qc) 영역 보강 - SLD(rho) 결정 1순위
-        # 균등 가중치 상태에서 Qc 영역(Q < 0.08)만 명시적으로 강조
+        # emphasize the critical-angle region (Q < 0.08), which determines the SLD (rho)
         qc_mask = (self.q_grid < 0.08).float() * mask
         loss_qc = torch.sum(qc_mask * (log_r_recon - log_r_target) ** 2) / (qc_mask.sum() + 1e-9)
 
-        # 3. 프린지 간격(Diff) 보강 - 두께(d) 결정 1순위
-        # 모든 영역의 가중치가 1.0이므로 고각도 프린지 미분값이 손실에 온전히 반영됨
+        # the fringe spacing (diff) determines the thickness d; with uniform weights the high-angle
+        # fringe derivatives count fully
         diff_recon = torch.diff(log_r_recon, dim=-1)
         diff_target = torch.diff(log_r_target, dim=-1)
         diff_mask = mask[:, 1:]
@@ -53,22 +51,21 @@ class XRRWeightedLoss(nn.Module):
             diff_mask.sum() + 1e-9
         )
 
-        # 4. 베이스 재구성 손실 (균등 가중치 적용)
         base_error = (log_r_recon - log_r_target) ** 2
         loss_recon_base = (base_error * self.q_weights * mask).sum() / valid_points
 
-        # 5. 파라미터 지도 학습 (d_f, rho_f, sig_f 등 1순위 강조)
+        # supervised parameters; d_f, rho_f, sig_f are top priority
         loss_param = 0
         w_set = config.get_weight_set(device=log_r_target.device)
         for fld in fields(ParamSet):
             key = fld.name
             p_min, p_max = getattr(config.ranges, key)
-            # 0~1 사이로 정규화하여 MSE 계산
+            # normalized to 0..1 for the MSE
             norm_pred = (getattr(p_pred, key) - p_min) / (p_max - p_min + 1e-9)
             norm_true = (getattr(p_true, key) - p_min) / (p_max - p_min + 1e-9)
             loss_param += F.mse_loss(norm_pred, norm_true) * getattr(w_set, key)
 
-        # 6. 최종 통합 (우선순위 가중치: Fringe(30) > Qc(15) > Base(1))
+        # priority weights: Fringe (30) > Qc (15) > Base (1)
         total_loss = (
             (loss_recon_base + 15.0 * loss_qc + 30.0 * loss_fringe)
             + (curr_sup_w * loss_param)
@@ -79,7 +76,7 @@ class XRRWeightedLoss(nn.Module):
 
 
 def plot_learning_curves(history: dict[str, list[float]], save_path: str | Path):
-    """전체 학습 과정의 Loss 추이 요약"""
+    """Plot the loss history over the whole training run."""
     if "train_loss" not in history or not history["train_loss"]:
         return
 
@@ -109,13 +106,10 @@ def save_pinn_report(
     save_path: Path | str,
     step: int,
 ):
-    """
-    PINN 상태 종합 리포트 생성 시각화
-    """
+    """Plot a combined PINN status report."""
     fig = plt.figure(figsize=(16, 11))
     gs = gridspec.GridSpec(2, 2, width_ratios=[1, 1.2], height_ratios=[3, 1])
 
-    # 1. [Left] 최근 500스텝 수렴 곡선
     ax0 = plt.subplot(gs[:, 0])
     recent_loss = loss_history[-500:]
     ax0.plot(recent_loss, color="#2c3e50", lw=1.5)
@@ -124,10 +118,9 @@ def save_pinn_report(
     ax0.set_xlabel("Steps")
     ax0.grid(True, alpha=0.2)
 
-    # 2. [Right Top] XRR Profile Fitting
     ax1 = plt.subplot(gs[0, 1])
     q_np = q_grid.cpu().numpy()
-    # Batch의 첫 번째 샘플 시각화
+    # first sample of the batch
     y_target = target_log_r[0].detach().cpu().numpy()
     y_recon = torch.log10(torch.clamp(r_recon[0], min=1e-11)).detach().cpu().numpy()
 
@@ -138,7 +131,6 @@ def save_pinn_report(
     ax1.legend(loc="upper right")
     ax1.grid(True, alpha=0.3)
 
-    # 3. [Right Bottom] Residuals (Error)
     ax2 = plt.subplot(gs[1, 1])
     residuals = y_recon - y_target
     ax2.fill_between(q_np, residuals, 0, color="#3498db", alpha=0.3)
@@ -148,8 +140,6 @@ def save_pinn_report(
     ax2.set_xlabel("q ($Å^{-1}$)")
     ax2.set_ylim(-0.5, 0.5)
 
-    # 4. [Bottom Overlay] 파라미터 비교 텍스트
-    # ParamSet의 __repr__을 활용하여 깔끔하게 출력
     info_text = f"STEP: {step:06d}\n\nPRED: {params_pred}\n\nTRUE: {params_true}"
     plt.gcf().text(
         0.02,

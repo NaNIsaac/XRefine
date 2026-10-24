@@ -62,7 +62,6 @@ class DynamicParamSet:
             val = rng[0] + torch.rand(batch_size, 1, device=device) * (rng[1] - rng[0])
             return val
 
-        # 1. Layer Parameters
         for layer in config.layers:
             params[f"{layer.name}.thickness"] = sample_val(layer.thickness)
             params[f"{layer.name}.roughness"] = sample_val(layer.roughness)
@@ -72,7 +71,6 @@ class DynamicParamSet:
             if hasattr(layer, "sld_imag") and layer.sld_imag is not None:
                 params[f"{layer.name}.sld_imag"] = sample_val(layer.sld_imag)
 
-        # 2. Substrate
         params["Substrate.roughness"] = sample_val(config.substrate.roughness)
         params["Substrate.sld"] = sample_val(config.substrate.sld)
 
@@ -80,9 +78,6 @@ class DynamicParamSet:
         if hasattr(config.substrate, "sld_imag") and config.substrate.sld_imag is not None:
             params["Substrate.sld_imag"] = sample_val(config.substrate.sld_imag)
 
-        # 3. Ambient (Usually fixed, but ready for extension)
-
-        # 4. Instrument/Global Parameters
         for key in cls.INSTRUMENT_KEYS:
             if hasattr(config, key):
                 rng = getattr(config, key)
@@ -154,17 +149,14 @@ class DynamicParamSet:
         first_key = next(iter(self._params))
         batch_size = self._params[first_key].shape[0]
 
-        # 1. Thickness
         t_amb = torch.zeros((batch_size, 1), device=self.device)
         t_layers = [self._params[f"{name}.thickness"] for name in self.layer_names]
         thickness = torch.cat([t_amb] + t_layers, dim=1)
 
-        # 2. Roughness
         r_layers = [self._params[f"{name}.roughness"] for name in self.layer_names]
         r_sub = self._params["Substrate.roughness"]
         roughness = torch.cat(r_layers + [r_sub], dim=1)
 
-        # 3. SLD (Complex Support)
         # Ambient is 0 (Air), assumed real=0, imag=0
         # If we wanted complex ambient, we'd need config support, but Air is usually 0+0j.
         # We start with a complex tensor for ambient.

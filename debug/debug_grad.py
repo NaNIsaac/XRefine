@@ -4,7 +4,7 @@ from xrefine.core.abeles import abeles
 
 
 def check_gradients():
-    # 학습 중 발생할 수 있는 극단적인 값 설정
+    # extreme values that can occur during training
     thick = torch.tensor([[1.0]], requires_grad=True)
     rough = torch.tensor([[2.0, 2.0]], requires_grad=True)
     sld = torch.tensor([[0.0, 20.0, 20.0]], requires_grad=True)

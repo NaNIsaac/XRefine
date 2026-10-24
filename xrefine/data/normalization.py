@@ -97,9 +97,7 @@ def apply_normalization(
         return y_raw / scale, scale
 
 
-# =============================================================================
 # Tensor Versions (for Generator)
-# =============================================================================
 
 
 def apply_normalization_tensor(

@@ -30,9 +30,6 @@ app = typer.Typer(
 )
 
 
-# -----------------------------------------------------------------------------
-# 1. Enhanced Model Definition
-# -----------------------------------------------------------------------------
 class FourierConvPINNEnhanced(BasePINNModelEnhanced):
     """
     Fourier+Conv PINN model with enhanced backpropagation.
@@ -51,11 +48,8 @@ class FourierConvPINNEnhanced(BasePINNModelEnhanced):
         return self.encoder_net(x)
 
 
-# -----------------------------------------------------------------------------
-# 2. CLI Helpers (from main.py)
-# -----------------------------------------------------------------------------
 def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefineConfig:
-    """CLI 인자를 계층적 dict로 변환하여 Config 객체 업데이트"""
+    """Apply unknown CLI arguments to the config and return the updated config."""
     config_dict = config_obj.model_dump()
 
     for i in range(0, len(unknown), 2):
@@ -70,7 +64,7 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
         value_str = unknown[i + 1]
         parts = key.split(".")
 
-        # 'config.' 접두사 무시
+        # ignore a leading "config." prefix for backward compatibility
         if parts[0] == "config" and len(parts) > 1:
             parts = parts[1:]
 
@@ -80,7 +74,6 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
                 target[part] = {}
             target = target[part]
 
-        # 자동 타입 변환
         try:
             if value_str.lower() in ("true", "false"):
                 val = value_str.lower() == "true"
@@ -99,7 +92,7 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
 
 
 def format_config_summary(config: XRefineConfig) -> str:
-    """현재 세션의 핵심 파라미터 요약 출력"""
+    """Return the key session parameters as a printable summary."""
     lines: list[str] = []
     line = "=" * 60
     lines.append(f"\n{line}\n[ENHANCED SESSION CONFIGURATION]\n{line}")
@@ -132,9 +125,6 @@ def format_config_summary(config: XRefineConfig) -> str:
     return "\n".join(lines)
 
 
-# -----------------------------------------------------------------------------
-# 3. CLI Commands
-# -----------------------------------------------------------------------------
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def train(
     ctx: typer.Context,
@@ -142,7 +132,6 @@ def train(
     resume: Annotated[bool, typer.Option("--resume", help="Resume from last checkpoint")] = False,
 ):
     """Start an Enhanced PINN training session."""
-    # 1. Load Config
     try:
         config_obj = XRefineConfig.load_yaml(cfg)
     except FileNotFoundError:
@@ -152,22 +141,18 @@ def train(
         logger.error(f"Failed to load config: {e}")
         config_obj = CONFIG
 
-    # 2. Merge CLI Args
     if ctx.args:
         config_obj = merge_unknown_args(config_obj, ctx.args)
 
     logger.info("\n" + format_config_summary(config_obj))
 
-    # 3. Setup Save Dir
     save_dir = config_obj.save_root / config_obj.experiment_name
     save_dir.mkdir(parents=True, exist_ok=True)
     config_obj.save_yaml(save_dir / "config.yaml")
 
-    # 4. Initialize Enhanced Model
     logger.info("Initializing FourierConvPINNEnhanced model...")
     model = FourierConvPINNEnhanced(config_obj).to(config_obj.device)
 
-    # 5. Start Training
     trainer = XRefineTrainer(model=model, config=config_obj)
 
     # Check for set_epoch support just in case
@@ -205,8 +190,8 @@ def eval(
 
     logger.info(f"🔍 [EVAL] Using checkpoint: {checkpoint}")
 
-    # Note: XRREvaluator uses standard get_model internally.
-    # Ideally, checkpoint loading handles architecture mismatch if keys align.
+    # XRREvaluator uses the standard get_model internally; checkpoint loading works if the keys
+    # align
     evaluator = XRREvaluator(checkpoint_path=checkpoint, batch_size=batch_size)
     evaluator.setup()
     evaluator.evaluate_all()

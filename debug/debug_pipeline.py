@@ -14,7 +14,6 @@ def debug():
     config.n_layers = 1
     config.batch_size = 5
 
-    # 1. Test Generator
     print("\n[1] Testing Generator...")
     q_grid = config.q_grid.to(device)
 
@@ -37,7 +36,6 @@ def debug():
     t, rough, sld = params
     print(f"Thickness samples: {t.flatten().cpu().numpy()}")
 
-    # 2. Test Model Forward
     print("\n[2] Testing Model Forward...")
     model = XRR_Fourier_PINN(config=config, device=device).to(device)
 
@@ -56,7 +54,6 @@ def debug():
     else:
         print("✅ Model prediction varies with input.")
 
-    # 3. Test Gradient Flow
     print("\n[3] Testing Gradient Flow...")
     loss_fn = torch.nn.MSELoss()
     target = torch.log10(r + 1e-12)  # Autoencoder style for test

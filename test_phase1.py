@@ -9,7 +9,6 @@ from xrefine.models import get_model
 def test_phase1_dynamic_system():
     print("🚀 Starting Phase 1 Verification...")
 
-    # 1. Load Config
     try:
         config = XRefineConfig.load_yaml("config.yaml")
         print("✅ Config Loaded Successfully")
@@ -20,7 +19,6 @@ def test_phase1_dynamic_system():
         print(f"❌ Config Load Failed: {e}")
         return
 
-    # 2. Test Dynamic ParamSet
     try:
         # Batch size 2
         params = ParamSet.from_config(config.sample, batch_size=2, device=config.device)
@@ -36,7 +34,6 @@ def test_phase1_dynamic_system():
         print(f"❌ ParamSet Failed: {e}")
         return
 
-    # 3. Test Generator (Physics Engine)
     try:
         r_batch, params_gt = generate_synthetic_batch(2, config.q_grid, config)
         print(f"✅ Generator Output: {r_batch.shape}")
@@ -44,7 +41,6 @@ def test_phase1_dynamic_system():
         print(f"❌ Generator Failed: {e}")
         return
 
-    # 4. Test Model (Dynamic Factory)
     try:
         model = get_model(config).to(config.device)
         print(

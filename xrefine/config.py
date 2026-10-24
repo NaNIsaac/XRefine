@@ -18,10 +18,6 @@ from xrefine.physics_utils import tth2q
 # Helper Type for Ranges [min, max]
 Range = Annotated[list[float], Field(min_length=2, max_length=2)]
 
-# ==============================================================================
-# 1. Physical Structure Configuration (Dynamic Layers)
-# ==============================================================================
-
 
 class MaterialConfig(BaseModel):
     """Configuration for a single material property (SLD, Roughness)."""
@@ -72,11 +68,6 @@ class SampleConfig(BaseModel):
     i0: Range = Field(default=[0.8, 1.2], description="Intensity Scale")
     dq: Range = Field(default=[0.0005, 0.02], description="Resolution [A^-1]")
     tth_offset: Range = Field(default=[-0.05, 0.05], description="TwoTheta Offset [deg]")
-
-
-# ==============================================================================
-# 2. Existing Configs (Refined)
-# ==============================================================================
 
 
 class InstrumentConfig(BaseModel):
@@ -165,11 +156,6 @@ class DataConfig(BaseModel):
 
     # Plateau mode: Q upper limit for searching
     plateau_q_limit: float = 0.08
-
-
-# ==============================================================================
-# 3. Root Configuration
-# ==============================================================================
 
 
 class XRefineConfig(BaseModel):

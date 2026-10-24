@@ -14,14 +14,12 @@ from xrefine.train import XRefineTrainer
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# 1. HPO 상태 저장용 설정
 DB_PATH = "hpo_study.db"
 STUDY_NAME = "xrefine_hpo_expanded_v1"
 YAML_PATH = Path("config.yaml")
 
 
 def objective(trial: optuna.Trial):
-    # 설정 로드 및 파라미터 샘플링
     if YAML_PATH.exists():
         base_cfg = XRefineConfig.load_yaml(YAML_PATH)
     else:
@@ -29,9 +27,7 @@ def objective(trial: optuna.Trial):
 
         base_cfg = CONFIG.model_copy(deep=True)
 
-    # --- Hyperparameter Search Space ---
-
-    # 1. New Exploration: Model Architecture (Concentrate here)
+    # model architecture (main focus of this search)
     enc_depth = trial.suggest_int("enc_depth", 4, 8, step=2)
     n_channels = trial.suggest_categorical("n_channels", [64, 128, 256])
     kernel_size = trial.suggest_int("kernel_size", 15, 31, step=2)
@@ -46,22 +42,19 @@ def objective(trial: optuna.Trial):
     base_cfg.model.kernel_size = kernel_size
     base_cfg.model.hidden_dim = hidden_dim
 
-    # 2. Training Dynamics
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
     sup_w_end = trial.suggest_float("sup_w_end", 1000.0, 5000.0, log=True)
 
     base_cfg.train.batch_size = batch_size
     base_cfg.train.sup_w_end = sup_w_end
 
-    # 3. Augmentation
     intensity_noise = trial.suggest_float("intensity_noise", 0.05, 0.4)
     base_cfg.augmentations.intensity_noise_scale = intensity_noise
 
     # Experiment Setup
     base_cfg.experiment_name = f"hpo_{trial.number}"
-    base_cfg.train.epochs = 15  # 에폭 약간 증가
+    base_cfg.train.epochs = 15
 
-    # 모델 및 트레이너 초기화
     model = FourierConvPINN(base_cfg)
     model.to(base_cfg.device)
 
@@ -72,14 +65,13 @@ def objective(trial: optuna.Trial):
     epoch_pbar = tqdm(range(base_cfg.train.epochs), desc=desc, leave=False)
 
     for epoch in epoch_pbar:
-        # 학습
         curr_w = trainer._get_curriculum_weight(epoch)
         train_loss = trainer.train_epoch(epoch, curr_w)
 
         if np.isnan(train_loss):
             return float("inf")
 
-        # 검증 (Parameter Loss를 메인 메트릭으로 사용)
+        # parameter loss is the main metric
         metrics, _, _ = trainer.validate(curr_w)
         val_param_error = metrics["loss_param"]
 
@@ -123,7 +115,6 @@ if __name__ == "__main__":
         print(f"🏆 BEST (Param MAE): {study.best_value:.6f}")
         print("Params:", study.best_params)
 
-        # Best Config 저장
         best_params = study.best_params
         print("💾 Saving best configuration to 'best_hpo_config.yaml'...")
 

@@ -26,7 +26,7 @@ app = typer.Typer(
 
 
 def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefineConfig:
-    """CLI 인자를 계층적 dict로 변환하여 Config 객체 업데이트"""
+    """Apply unknown CLI arguments to the config and return the updated config."""
     config_dict = config_obj.model_dump()
 
     for i in range(0, len(unknown), 2):
@@ -41,7 +41,7 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
         value_str = unknown[i + 1]
         parts = key.split(".")
 
-        # 'config.' 접두사 무시 (하위 호환성)
+        # ignore a leading "config." prefix for backward compatibility
         if parts[0] == "config" and len(parts) > 1:
             parts = parts[1:]
 
@@ -51,7 +51,6 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
                 target[part] = {}
             target = target[part]
 
-        # 자동 타입 변환
         try:
             if value_str.lower() in ("true", "false"):
                 val = value_str.lower() == "true"
@@ -70,7 +69,7 @@ def merge_unknown_args(config_obj: XRefineConfig, unknown: list[str]) -> XRefine
 
 
 def format_config_summary(config: XRefineConfig) -> str:
-    """현재 세션의 핵심 파라미터 요약 출력"""
+    """Return the key session parameters as a printable summary."""
     lines: list[str] = []
     line = "=" * 60
     lines.append(f"\n{line}\n[PRE-FLIGHT CHECK: SESSION CONFIGURATION]\n{line}")

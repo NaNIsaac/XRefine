@@ -31,7 +31,6 @@ class FourierConvEncoder(nn.Module):
 
         self.use_fourier = use_fourier
 
-        # 1. Fourier Feature Mapping
         if use_fourier:
             self.fourier = FourierFeatureMapping(
                 mapping_size=mapping_size,
@@ -43,7 +42,6 @@ class FourierConvEncoder(nn.Module):
         else:
             in_channels = 1
 
-        # 2. CNN Encoder
         layers = []
         curr_dim = in_channels
 
@@ -62,14 +60,11 @@ class FourierConvEncoder(nn.Module):
             )
             curr_dim = out_dim
 
-        # [FIX 1] 변수명 통일 (self.encoder -> self.backbone)
         self.backbone = nn.Sequential(*layers)
 
-        # 3. Global Pooling
         self.global_pool = nn.AdaptiveAvgPool1d(1)
 
-        # 4. Regressor (MLP)
-        # [FIX 2] 입력 차원 수정: Global Stats(3)가 Concat되므로 +3 추가
+        # +3 input dims for the concatenated global stats
         self.regressor = nn.Sequential(
             nn.Linear(curr_dim + 3, mlp_hidden),
             nn.LeakyReLU(0.2, inplace=True),
@@ -100,17 +95,13 @@ class FourierConvEncoder(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(1)
 
-        # [FIX 2 Related] Global Hint Extraction
-        # 1. Max Intensity
+        # global statistics of the input: max, low-q mean, std
         stat_max = x.max(dim=-1)[0]  # (B, 1)
 
-        # 2. Low-Q Mean
         stat_low_q = x[..., :50].mean(dim=-1)  # (B, 1)
 
-        # 3. Std Dev
         stat_std = x.std(dim=-1)  # (B, 1)
 
-        # 합치기: (B, 3)
         global_stats = torch.cat([stat_max, stat_low_q, stat_std], dim=1)
 
         # Intensity Normalization (-1 ~ 1)
@@ -125,7 +116,6 @@ class FourierConvEncoder(nn.Module):
             x_in = x_norm
 
         # CNN Backbone
-        # [FIX 1 Related] 이제 self.backbone이 정의되어 있으므로 에러 없음
         feat = self.backbone(x_in)  # (B, C, L_pooled)
         feat = self.global_pool(feat).flatten(1)  # (B, C) -> (B, Hidden_Dim)
 

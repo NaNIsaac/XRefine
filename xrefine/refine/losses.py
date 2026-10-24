@@ -31,23 +31,20 @@ def correlation_loss(r_sim: Tensor, log_r_obs: Tensor, mask: Tensor) -> Tensor:
     return 1.0 - corr
 
 
-# [NEW] Gradient (Sobolev) Loss
-# 그래프의 "기울기"를 비교합니다.
-# 시뮬레이션이 밋밋하게 펴져있으면(기울기 0), 실제 데이터(기울기 급격함)와 차이가 커서 Loss가 폭발합니다.
+# Gradient (Sobolev) loss: compares the slopes of the curves.
+# A flat simulation (slope 0) differs strongly from real data with steep slopes, so the loss grows
+# large.
 def log_gradient_loss(r_sim: Tensor, log_r_obs: Tensor, mask: Tensor) -> Tensor:
     log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
 
-    # 1차 미분 (Central Difference approximation or simple diff)
     # shape: (B, Q-1)
     diff_sim = log_r_sim[:, 1:] - log_r_sim[:, :-1]
     diff_obs = log_r_obs[:, 1:] - log_r_obs[:, :-1]
-    mask_diff = mask[:, 1:] & mask[:, :-1]  # 두 포인트 모두 유효해야 함
+    mask_diff = mask[:, 1:] & mask[:, :-1]
 
-    # 미분값의 MSE + 원래 값의 MSE (Hybrid)
     grad_loss = torch.mean(((diff_sim - diff_obs) ** 2) * mask_diff)
     val_loss = torch.mean(((log_r_sim - log_r_obs) ** 2) * mask)
 
-    # 기울기 형상에 10배 가중치
     return val_loss + 10.0 * grad_loss
 
 
@@ -73,15 +70,15 @@ def make_fringe_weighted_loss(
 
 
 def hybrid_linear_log_loss(r_sim: Tensor, log_r_obs: Tensor, mask: Tensor) -> Tensor:
-    # 1. Linear Component (Intensity & Critical Angle)
+    # linear part: intensity and critical angle
     r_obs = 10**log_r_obs
     loss_lin = torch.mean(((r_sim - r_obs) ** 2) * mask)
 
-    # 2. Log Component (Fringes & Dynamic Range)
+    # log part: fringes and dynamic range
     log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
     loss_log = torch.mean(((log_r_sim - log_r_obs) ** 2) * mask)
 
-    # 3. Cross Balancing (Linear:Log = 20:1)
+    # weights linear:log = 20:1
     return (20.0 * loss_lin) + loss_log
 
 

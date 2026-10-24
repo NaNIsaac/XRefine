@@ -1,7 +1,6 @@
-"""
-Latent Transformer-VAE PINN (Uncertainty Aware)
+"""Latent Transformer-VAE PINN (Uncertainty Aware)
 ===============================================
-구조:
+Structure:
 1. Input (Log R) -> Fourier Feature Mapping
 2. Linear Projection + Positional Encoding
 3. Transformer Encoder (Self-Attention) -> Global Pooling
@@ -14,7 +13,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from xrefine.config import XRefineConfig
-from xrefine.constants import LOG_MASK_VALUE  # [FIX] 상수 임포트
+from xrefine.constants import LOG_MASK_VALUE
 from xrefine.core.structures import ParamSet
 from xrefine.models import register_model
 from xrefine.models.common import BasePINNModel, FourierFeatureMapping, PositionalEncoding
@@ -32,7 +31,6 @@ class TransformerVAEEncoder(nn.Module):
         input_len = config.q_len
         mapping_size = config.model.mapping_size
 
-        # 1. Input Embedding
         self.fourier = FourierFeatureMapping(
             mapping_size=mapping_size, scale=config.model.fourier_scale, output_format="transformer"
         )
@@ -42,7 +40,6 @@ class TransformerVAEEncoder(nn.Module):
         self.input_proj = nn.Linear(input_dim, d_model)
         self.pos_encoder = PositionalEncoding(d_model, max_len=input_len)
 
-        # 2. Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
@@ -54,7 +51,6 @@ class TransformerVAEEncoder(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # 3. VAE Head
         self.fc_mu = nn.Linear(d_model, output_dim)
         self.fc_logvar = nn.Linear(d_model, output_dim)
 
@@ -68,9 +64,9 @@ class TransformerVAEEncoder(nn.Module):
         if x.dim() == 2:
             x = x.unsqueeze(-1)  # (B, S, 1)
 
-        # [FIX] Intensity Normalization (Sync with CNN/ViT logic)
-        # LOG_MASK_VALUE(-15.0) ~ 0.0 범위를 0 ~ 1 (또는 -1 ~ 1)로 매핑
-        # Transformer는 보통 0~1 입력을 선호하는 경향이 있음 (Positional Encoding과 스케일 매칭)
+        # Intensity normalization, in sync with the CNN/ViT models.
+        # Maps [LOG_MASK_VALUE, 0] to [0, 1]; transformers tend to prefer 0..1 inputs, which also
+        # matches the positional-encoding scale.
         range_val = -LOG_MASK_VALUE  # 15.0
         x_norm = (torch.clamp(x, min=LOG_MASK_VALUE, max=0.0) + range_val) / range_val
 
@@ -100,22 +96,19 @@ class TransformerVAEEncoder(nn.Module):
 
 
 @register_model("latent_trans")  # Registry Key
-class LatentTransPINN(BasePINNModel):  # Class Name Updated
-    """
-    Transformer-VAE 기반 PINN 모델.
-    확률적 Latent Space로 불확실성 모델링.
+class LatentTransPINN(BasePINNModel):
+    """Transformer-VAE based PINN model.
+    Models uncertainty with a probabilistic latent space.
     """
 
     def __init__(self, config: XRefineConfig):
         super().__init__(config)
         self.encoder_net = TransformerVAEEncoder(config, self.output_dim)
 
-        # VAE 관련 정보 저장용
         self._mu = None
         self._logvar = None
 
     def encode(self, x: Tensor) -> Tensor:
-        """Transformer-VAE Encoder로 파라미터 추출"""
         z, mu, logvar = self.encoder_net(x)
         self._mu = mu
         self._logvar = logvar

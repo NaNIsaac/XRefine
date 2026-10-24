@@ -23,18 +23,14 @@ from xrefine.logger import logger
 from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
 
-# [Refine Config] 기존 설정을 가져오되, 실행 시점에 주입된 Config가 우선합니다.
+# the config injected at run time takes precedence over this default
 from xrefine.refine.config import DEFAULT_CONFIG
 from xrefine.refine.optimizer import optimize_step as optimize_global
 
-# [CORE CHANGE] Import Robust Optimizer
-# 기존 optimize_step 대신, 안전장치가 포함된 robust 버전을 사용합니다.
+# robust optimizer with safeguards, used instead of the original optimize_step
 from xrefine.refine.optimizer_robust import optimize_step as optimize_robust
 
 
-# -----------------------------------------------------------------------------
-# Metric & Report Utils
-# -----------------------------------------------------------------------------
 def calculate_fom(model, params, log_r_obs, config, cutoff):
     device = config.device
     q_grid = config.q_grid.to(device)
@@ -53,9 +49,7 @@ def calculate_fom(model, params, log_r_obs, config, cutoff):
 
 
 def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
-    """
-    Pandas DataFrame을 이용한 가로형 출력.
-    """
+    """Print a horizontal table using a pandas DataFrame."""
     imse, fmse = fom_init["LogMSE"], fom_final["LogMSE"]
     imp = (imse - fmse) / imse * 100 if imse != 0 else 0
 
@@ -124,9 +118,6 @@ def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
     logger.info(full_log_str)
 
 
-# -----------------------------------------------------------------------------
-# Main Pipeline
-# -----------------------------------------------------------------------------
 def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
     """
     Load and Normalize Data using configurable normalization strategy.
@@ -140,7 +131,6 @@ def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
     from xrefine.data.normalization import apply_normalization
 
     try:
-        # 1. Load Raw Data
         df = pd.read_csv(file_path, sep=r"\s+", header=None, engine="python", dtype=str)
         for col in df.columns:
             df[col] = (
@@ -153,14 +143,13 @@ def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
         x_raw_tth, y_raw = df.values[:, 0], df.values[:, 1]
         x_raw_q = tth2q(x_raw_tth, config.instrument.wavelength)
 
-        # 2. Configurable Normalization via config.data.normalization_mode
+        # configurable normalization via config.data.normalization_mode
         y_norm, scale = apply_normalization(y_raw, config, q_array=x_raw_q, tth_array=x_raw_tth)
         logger.info(f"  [Data] Normalization Scale Factor: {scale:.4e}")
 
-        # 3. Log Transform (allow values > 1.0 for noise handling)
+        # log transform (values > 1.0 are allowed for noise handling)
         log_y_raw = np.log10(np.maximum(y_norm, 1e-11))
 
-        # 4. Interpolate to Q-Grid
         q_target = config.q_grid.cpu().numpy()
         log_y_interp = np.interp(q_target, x_raw_q, log_y_raw)
 
@@ -368,12 +357,10 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
 
         # [REMOVED I0 Locking - let stages optimize I0 if needed]
 
-        # [NEW] Physics Constraint: Roughness limit (User Rule: roughness <= 0.5 * thickness)
-        # 프린지가 'Washed out' 되는 것을 방지하기 위해 거칠기를 두께의 절반으로 제한
+        # physics constraint: roughness <= 0.5 * thickness, to keep the fringes from washing out
         for layer_key in ["Target_Film", "Top_Layer"]:
             thick_key = f"{layer_key}.thickness"
             rough_key = f"{layer_key}.roughness"
-            # 최적화 대상인 경우에만 제약 적용
             if thick_key in p_current._params and rough_key in current_stage_config.optimize_keys:
                 t_val = p_current._params[thick_key].item()
                 # Ensure roughness doesn't exceed 50% of thickness, but allow at least 2.0A
@@ -382,7 +369,7 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                 if not current_stage_config.temp_bounds:
                     current_stage_config.temp_bounds = {}
 
-                # 기존 Bounds가 있다면 더 좁은 범위(교집합)를 선택
+                # keep the intersection with existing bounds
                 existing_bounds = current_stage_config.temp_bounds.get(rough_key)
                 if existing_bounds:
                     new_max = min(existing_bounds[1], r_max)
@@ -392,7 +379,6 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
 
                 # logger.info(f"  [Physics] Constraining {rough_key} <= {r_max:.2f} (Half-Thickness Rule)")
 
-        # [Smart-Lock Logic] (기존 유지)
         if hasattr(stage, "relative_bounds") and stage.relative_bounds:
             if not current_stage_config.temp_bounds:
                 current_stage_config.temp_bounds = {}
@@ -408,7 +394,6 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                     current_stage_config.temp_bounds[key] = (p_min, p_max)
             stage_name += " (Smart-Lock)"
 
-        # [Trust AI Grid Search Logic] (기존 유지)
         if refine_config.trust_ai and stage.use_grid_search:
             # ... (Trust AI Grid logic same as before) ...
             target_key = stage.grid_target_key
@@ -422,7 +407,6 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                 current_stage_config.grid_range = (new_min, new_max)
                 stage_name += f" (Trust Grid)"
 
-        # --- [OPTIMIZER SELECTION LOGIC] ---
         if current_stage_config.use_grid_search:
             # Type A: Grid Search (Thickness)
             best_val = grid_search_thickness(
@@ -442,24 +426,22 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
             if valid_keys:
                 current_stage_config.optimize_keys = valid_keys
 
-                # [CORE FIX] 하이브리드 스위칭
-                # Stage 1 (Scale) & Stage 2 (Anchor):
-                # -> 초기 위치를 잡는게 중요하므로 "Global Optimizer (DE)" 사용
-                # -> 저각 피팅 성능 복구의 핵심!
+                # hybrid switching: early stages (1 Scale, 2 Anchor) use the global optimizer (DE)
+                # because the initial position matters; this restores the low-angle fit
                 is_early_stage = any(
                     x in stage_name for x in ["Scale", "Footprint", "Anchor", "Roundness"]
                 )
 
                 if is_early_stage:
                     # Legacy DE Optimizer (Scipy)
-                    # DE는 Gradient가 필요 없으므로 초기값이 튀어도 잘 찾아감
+                    # DE needs no gradient, so it copes with a bad initial value
                     p_current = optimize_global(
                         model, p_current, log_r_obs, xrr_config, current_stage_config, verbose=False
                     )
                 else:
                     # Robust GD Optimizer (Torch)
-                    # Stage 4(Shape), Stage 5(Polish)는 미세 조정이므로 빠르고 안전한 GD 사용
-                    # Gradient Clipping으로 두께 폭발 방지
+                    # stages 4 (Shape) and 5 (Polish) are fine tuning, so use fast and safe GD;
+                    # gradient clipping prevents thickness explosion
                     p_current = optimize_robust(
                         model, p_current, log_r_obs, xrr_config, current_stage_config, verbose=False
                     )
@@ -538,7 +520,7 @@ def run_real_inference(
 
             # Simulate current AI guess at this point
             with torch.no_grad():
-                # 1. Simulate R (Normalized scale 0~1)
+                # simulate R (normalized scale 0 to 1)
                 t, r, s = p_ai.assemble_structure()
                 dum_q = q_grid_gpu[idx_anchor].view(1, 1)  # Single Point
 
@@ -576,7 +558,6 @@ def run_real_inference(
 
     logger.info("AI Initial Guess Done.")
 
-    # [CORE CHANGE] robust run_refinement 호출
     p_refined = run_refinement(model, p_ai, masked_input, xrr_config, refine_config)
 
     def simulate_full(params):

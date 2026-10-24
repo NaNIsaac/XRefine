@@ -1,7 +1,6 @@
-"""
-XRefine Training Module
+"""XRefine Training Module
 =======================
-PINN 모델 학습을 위한 모듈
+Training module for the PINN models.
 
 Usage:
     from xrefine.train import XRefineTrainer
