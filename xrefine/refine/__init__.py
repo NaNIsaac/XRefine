@@ -8,29 +8,21 @@ Usage:
 """
 
 # 1. Pipeline (Main Entry Points)
-from xrefine.refine.pipeline import (
-    run_refinement, 
-    run_real_inference
-)
-
 # 2. Configuration
-from xrefine.refine.config import (
-    RefinementConfig, 
-    StageConfig, 
-    DEFAULT_CONFIG
+from xrefine.refine.config import DEFAULT_CONFIG, RefinementConfig, StageConfig
+
+# 4. Loss Functions (Presets)
+from xrefine.refine.losses import (
+    CORRELATION,
+    FRINGE_WEIGHTED_LOG,
+    LINEAR_MSE,
+    LOG_MSE,
+    LossFn,
 )
 
 # 3. Core Logic
 from xrefine.refine.optimizer import optimize_step
-
-# 4. Loss Functions (Presets)
-from xrefine.refine.losses import (
-    LossFn,
-    LOG_MSE, 
-    LINEAR_MSE, 
-    CORRELATION, 
-    FRINGE_WEIGHTED_LOG,
-)
+from xrefine.refine.pipeline import run_real_inference, run_refinement
 
 __all__ = [
     "run_refinement",

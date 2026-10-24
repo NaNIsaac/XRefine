@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from math import log
-from typing import Optional
 
 import torch
 from torch import Tensor, nn
@@ -27,26 +26,22 @@ class PhysicalModel(nn.Module):
     def simulate_reflectivity(self, q: Tensor, theta: Tensor) -> Tensor:
         raise NotImplementedError
 
-    def get_sld_profiles(
-        self, theta: Tensor, z: Optional[Tensor] = None
-    ) -> tuple[Tensor, Tensor]:
+    def get_sld_profiles(self, theta: Tensor, z: Tensor | None = None) -> tuple[Tensor, Tensor]:
         raise NotImplementedError
 
-    def scale_theta_with_q_factor(
-        self, theta: Tensor, q: float
-    ) -> tuple[Tensor, Tensor]:
+    def scale_theta_with_q_factor(self, theta: Tensor, q: float) -> tuple[Tensor, Tensor]:
         raise NotImplementedError
 
     @property
-    def q_offset_idx(self) -> Optional[int]:
+    def q_offset_idx(self) -> int | None:
         raise NotImplementedError
 
     @property
-    def r_scale_idx(self) -> Optional[int]:
+    def r_scale_idx(self) -> int | None:
         raise NotImplementedError
 
     @property
-    def log_bkg_idx(self) -> Optional[int]:
+    def log_bkg_idx(self) -> int | None:
         raise NotImplementedError
 
     @property
@@ -114,11 +109,11 @@ class BasicLayerStructureModel(PhysicalModel):
         return params
 
     @property
-    def q_offset_idx(self) -> Optional[int]:
+    def q_offset_idx(self) -> int | None:
         return 3 * self.num_layers + 2 if self.use_dq_misalignment else None
 
     @property
-    def r_scale_idx(self) -> Optional[int]:
+    def r_scale_idx(self) -> int | None:
         if not self.use_dr_misalignment:
             return None
         idx = 3 * self.num_layers + 2
@@ -127,7 +122,7 @@ class BasicLayerStructureModel(PhysicalModel):
         return idx
 
     @property
-    def log_bkg_idx(self) -> Optional[int]:
+    def log_bkg_idx(self) -> int | None:
         if not self.use_background:
             return None
         idx = 3 * self.num_layers + 2
@@ -141,9 +136,7 @@ class BasicLayerStructureModel(PhysicalModel):
     def sld_indices(self) -> tuple[int]:
         return tuple(range(2 * self.num_layers + 1, 3 * self.num_layers + 2))
 
-    def get_sld_profiles(
-        self, theta: Tensor, z: Tensor = None, **kwargs
-    ) -> tuple[Tensor, Tensor]:
+    def get_sld_profiles(self, theta: Tensor, z: Tensor = None, **kwargs) -> tuple[Tensor, Tensor]:
         params = self._theta2refl_kwargs(theta)
         return get_density_profiles(
             thicknesses=params["thickness"],
@@ -167,16 +160,12 @@ class BasicLayerStructureModel(PhysicalModel):
         if self.use_background:
             additional_labels.append(r"$log(bkg)$")
 
-        return tuple(
-            get_param_labels(self.num_layers, add_units=True) + additional_labels
-        )
+        return tuple(get_param_labels(self.num_layers, add_units=True) + additional_labels)
 
     def simulate_reflectivity(self, q: Tensor, theta: Tensor) -> Tensor:
         return simulate_reflectivity(q, **self._theta2refl_kwargs(theta))
 
-    def scale_theta_with_q_factor(
-        self, theta: Tensor, q_factor: float
-    ) -> tuple[Tensor, Tensor]:
+    def scale_theta_with_q_factor(self, theta: Tensor, q_factor: float) -> tuple[Tensor, Tensor]:
         theta = theta.clone()
         logdetjac = -torch.ones_like(theta[..., 0]) * log(q_factor)
 

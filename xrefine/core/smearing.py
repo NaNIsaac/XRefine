@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from math import pi, sqrt, log
+from math import log, pi, sqrt
 
 import torch
-from torch import Tensor
 import torch.nn.functional as F
+from torch import Tensor
 
 from .abeles import abeles
 
@@ -38,7 +38,7 @@ def abeles_constant_smearing(
 
     # q_lin: (batch, q_lin_num)
     q_lin = _get_q_axes(q, dq, gauss_num, xrr_dq=xrr_dq)
-    
+
     # kernels: (batch, kernel_size)
     kernels = _get_t_gauss_kernels(dq, gauss_num)
 
@@ -51,24 +51,24 @@ def abeles_constant_smearing(
     # To do this, we treat the batch dimension as channels.
     # Input shape required: (1, batch_size, length)
     # Weight shape required: (batch_size, 1, kernel_size)
-    
+
     padding = (kernels.shape[-1] - 1) // 2
-    
+
     # curves: (batch, q_lin_num)
     # reshape to (1, batch, q_lin_num)
-    inp = curves.unsqueeze(0) 
+    inp = curves.unsqueeze(0)
     inp_padded = F.pad(inp, (padding, padding), mode="reflect")
-    
+
     # Weights: (batch, 1, kernel_size)
     w = kernels.unsqueeze(1)
-    
+
     smeared_curves = F.conv1d(
         inp_padded,
         w,
         groups=batch_size,
-    ) # Output: (1, batch, q_lin_num)
-    
-    smeared_curves = smeared_curves.squeeze(0) # (batch, q_lin_num)
+    )  # Output: (1, batch, q_lin_num)
+
+    smeared_curves = smeared_curves.squeeze(0)  # (batch, q_lin_num)
 
     # Interpolate back to original Q
     # q might be (batch, num_q)
@@ -80,7 +80,9 @@ def abeles_constant_smearing(
     return smeared_curves
 
 
-def instrument_reflectivity(q, thickness, roughness, sld, sample_length, beam_width, dq, tth_offset, simulator, wavelength):
+def instrument_reflectivity(
+    q, thickness, roughness, sld, sample_length, beam_width, dq, tth_offset, simulator, wavelength
+):
     """
     Reflectivity as the instrument records it, before i0 and background: 2θ zero offset,
     beam footprint and resolution smearing. The training-data generator and the models'
@@ -91,12 +93,23 @@ def instrument_reflectivity(q, thickness, roughness, sld, sample_length, beam_wi
         q = q + tth_offset * 0.01
     if dq is not None and dq.mean() > 1e-5:
         return abeles_constant_smearing(
-            q=q, thickness=thickness, roughness=roughness, sld=sld,
-            sample_length=sample_length, beam_width=beam_width, dq=dq, abeles_func=simulator,
+            q=q,
+            thickness=thickness,
+            roughness=roughness,
+            sld=sld,
+            sample_length=sample_length,
+            beam_width=beam_width,
+            dq=dq,
+            abeles_func=simulator,
         )
     return simulator(
-        q=q, thickness=thickness, roughness=roughness, sld=sld,
-        sample_length=sample_length, beam_width=beam_width, wavelength=wavelength,
+        q=q,
+        thickness=thickness,
+        roughness=roughness,
+        sld=sld,
+        sample_length=sample_length,
+        beam_width=beam_width,
+        wavelength=wavelength,
     )
 
 
@@ -117,29 +130,24 @@ def _torch_gauss(x, s):
 
 def _get_t_gauss_kernels(resolutions: Tensor, gaussnum: int = 51):
     # resolution: (batch, 1) usually
-    
+
     # We need a fixed grid for convolution kernel relative to its width?
     # No, the kernel width in Q varies if dq varies?
     # Actually here we are generating kernels for the linear Q grid.
-    
+
     # gauss_x range: [-1.7*dq, 1.7*dq]
     resolutions = resolutions.view(-1, 1)
-    
+
     gauss_x = _batch_linspace(-1.7 * resolutions, 1.7 * resolutions, gaussnum)
-    
+
     # spacing dx
     dx = (gauss_x[:, 1] - gauss_x[:, 0])[:, None]
-    
-    gauss_y = (
-        _torch_gauss(gauss_x, resolutions / _FWHM)
-        * dx
-    )
+
+    gauss_y = _torch_gauss(gauss_x, resolutions / _FWHM) * dx
     return gauss_y
 
 
-def _get_q_axes(
-    q: Tensor, resolutions: Tensor, gaussnum: int = 51, xrr_dq: bool = True
-):
+def _get_q_axes(q: Tensor, resolutions: Tensor, gaussnum: int = 51, xrr_dq: bool = True):
     if xrr_dq:
         return _get_q_axes_for_constant_dq(q, resolutions, gaussnum)
     else:
@@ -162,7 +170,7 @@ def _get_q_axes_for_linear_dq(q: Tensor, resolutions: Tensor, gaussnum: int = 51
     # This part involves .to(int) which breaks differentiability w.r.t q bounds if used for indexing
     # But num_points defines the tensor size, so it must be int / non-differentiable.
     # The values in the grid can be differentiable.
-    
+
     # We take the max required points across the batch to have a rectangular tensor
     num_pts_needed = (
         torch.abs((end - start) / (1.7 * resolutions / _FWHM / gaussgpoint))
@@ -171,7 +179,7 @@ def _get_q_axes_for_linear_dq(q: Tensor, resolutions: Tensor, gaussnum: int = 51
         .int()
         .item()
     )
-    
+
     # Ensure minimum points
     num_pts_needed = max(int(num_pts_needed), q.shape[1] + 10)
 
@@ -180,19 +188,17 @@ def _get_q_axes_for_linear_dq(q: Tensor, resolutions: Tensor, gaussnum: int = 51
     return q_lin
 
 
-def _get_q_axes_for_constant_dq(
-    q: Tensor, resolutions: Tensor, gaussnum: int = 51
-) -> Tensor:
+def _get_q_axes_for_constant_dq(q: Tensor, resolutions: Tensor, gaussnum: int = 51) -> Tensor:
     gaussgpoint = (gaussnum - 1) / 2
 
     start = q.min(1).values[:, None] - resolutions * 1.7
     end = q.max(1).values[:, None] + resolutions * 1.7
-    
+
     # Each sample's grid spacing must equal its own kernel spacing (±1.7 dq over gaussnum taps,
     # see _get_t_gauss_kernels). A spacing shared across the batch (set by the smallest dq)
     # would smear every other sample too little, so a curve's smearing would depend on its batch.
     step = 1.7 * resolutions / gaussgpoint  # (batch, 1)
-    
+
     num_pts_needed = ((end - start) / step).max().ceil().int().item() + 1
     num_pts_needed = max(num_pts_needed, q.shape[1] + 10)
 
@@ -209,30 +215,29 @@ def _batch_linear_interp1d(x: Tensor, y: Tensor, x_new: Tensor) -> Tensor:
     """
     # x, y: (batch, len)
     # x_new: (batch, len_new)
-    
+
     eps = torch.finfo(y.dtype).eps
-    
+
     # Indices for interpolation
     # searchsorted is not differentiable w.r.t x or x_new values directly (returns int indices)
     # But we use the indices to gather values, and then interpolate.
-    
+
     ind = torch.searchsorted(x.contiguous(), x_new.contiguous())
     ind = torch.clamp(ind - 1, 0, x.shape[-1] - 2)
-    
+
     # Gather pairs
     # Helper to gather along dim 1
     def gather_values(src, idx):
         return torch.gather(src, 1, idx)
-        
+
     x_lo = gather_values(x, ind)
     x_hi = gather_values(x, ind + 1)
     y_lo = gather_values(y, ind)
     y_hi = gather_values(y, ind + 1)
-    
+
     # Slopes
     slope = (y_hi - y_lo) / (x_hi - x_lo + eps)
-    
-    y_new = y_lo + slope * (x_new - x_lo)
-    
-    return y_new
 
+    y_new = y_lo + slope * (x_new - x_lo)
+
+    return y_new

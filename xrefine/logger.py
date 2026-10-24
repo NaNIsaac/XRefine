@@ -2,7 +2,9 @@ import sys
 from pathlib import Path
 
 import loguru
+
 from xrefine.config import CONFIG
+
 
 def setup_logger(level="INFO") -> None:
     """
@@ -12,7 +14,9 @@ def setup_logger(level="INFO") -> None:
         Logger: The configured logger instance.
     """
 
-    formatter: str = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}"
+    formatter: str = (
+        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name}:{function}:{line} - {message}"
+    )
     formatter = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <8}</level> | "
@@ -25,6 +29,7 @@ def setup_logger(level="INFO") -> None:
     loguru.logger.remove()
     loguru.logger.add(log_file, format=formatter, rotation="500 MB", compression="zip", level=level)
     loguru.logger.add(sys.stdout, format=formatter, level=level)
+
 
 setup_logger("DEBUG")
 logger = loguru.logger
