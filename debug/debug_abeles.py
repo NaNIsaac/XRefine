@@ -7,12 +7,6 @@ def run_stress_test():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🔍 Testing Abeles Stability on {device}...")
 
-    # 테스트 케이스 정의
-    # 1. 정상 케이스
-    # 2. 고각 거칠기 (Roughness Explosion)
-    # 3. 매우 두꺼운 박막 (Phase Wrap)
-    # 4. 낮은 q (Zero Division)
-
     test_cases = {
         "Normal": {
             "q": torch.linspace(0.01, 0.5, 100),
@@ -23,11 +17,11 @@ def run_stress_test():
         "Extreme Roughness": {
             "q": torch.linspace(0.01, 0.5, 100),
             "thick": torch.tensor([[10.0]]),
-            "rough": torch.tensor([[50.0, 50.0]]),  # 두께보다 큰 거칠기
+            "rough": torch.tensor([[50.0, 50.0]]),
             "sld": torch.tensor([[0.0, 60.0, 20.0]]),
         },
         "Low Q": {
-            "q": torch.tensor([1e-9, 1e-8, 1e-7]),  # 극단적으로 낮은 Q
+            "q": torch.tensor([1e-9, 1e-8, 1e-7]),
             "thick": torch.tensor([[100.0]]),
             "rough": torch.tensor([[2.0, 2.0]]),
             "sld": torch.tensor([[0.0, 20.0, 20.0]]),

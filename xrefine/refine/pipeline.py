@@ -26,9 +26,6 @@ from xrefine.refine.optimizer import optimize_step
 from xrefine.refine.pipeline_next import pre_fit_i0  # [NEW] Import pre_fit_i0
 
 
-# -----------------------------------------------------------------------------
-# Metric & Report Utils
-# -----------------------------------------------------------------------------
 def calculate_fom(model, params, log_r_obs, config, cutoff):
     device = config.device
     q_grid = config.q_grid.to(device)
@@ -50,14 +47,12 @@ def calculate_fom(model, params, log_r_obs, config, cutoff):
 
 
 def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
-    """
-    Pandas DataFrame을 이용한 가로형 출력.
-    모든 출력을 하나의 문자열로 합쳐서 로거 타임스탬프 간섭 방지.
+    """Print a horizontal table using a pandas DataFrame.
+    All output is joined into one string so logger timestamps do not interleave.
     """
     imse, fmse = fom_init["LogMSE"], fom_final["LogMSE"]
     imp = (imse - fmse) / imse * 100 if imse != 0 else 0
 
-    # 1. 문자열 버퍼 생성
     lines = []
     lines.append("=" * 90)
     lines.append(f"Result: {stage_name} | LogMSE: {imse:.5f} -> {fmse:.5f} ({imp:+.1f}%)")
@@ -116,20 +111,15 @@ def report_stage_horizontal(stage_name, p_init, p_final, fom_init, fom_final):
 
         df = pd.DataFrame(data, index=[label])
 
-        # DataFrame을 문자열로 변환 (index 포함)
         lines.append(df.to_string())
-        lines.append("")  # 공백 라인
+        lines.append("")
 
     lines.append("=" * 90)
 
-    # [Fix] 전체를 하나의 문자열로 합치고 맨 앞에 \n 추가
     full_log_str = "\n" + "\n".join(lines)
     logger.info(full_log_str)
 
 
-# -----------------------------------------------------------------------------
-# Main Pipeline
-# -----------------------------------------------------------------------------
 def load_real_data(file_path: str, config: XRefineConfig) -> torch.Tensor:
     """
     Load and Normalize Data using configurable normalization strategy.
@@ -239,8 +229,8 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                 logger.info(f"  [I0 Locked] Stage '{stage_name}': i0 fixed at {fitted_i0:.4f}")
             current_stage_config.fixed_params["i0"] = fitted_i0
 
-        # [NEW] Smart-Lock Logic: Relative Bounds Processing
-        # Config에 relative_bounds가 정의되어 있으면, 현재 값(p_current) 기준으로 temp_bounds를 생성합니다.
+        # smart lock: when the stage defines relative_bounds, build temp_bounds around the current
+        # value (p_current)
         if stage.relative_bounds:
             if not current_stage_config.temp_bounds:
                 current_stage_config.temp_bounds = {}
@@ -249,8 +239,8 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                 if key in p_current._params:
                     current_val = p_current._params[key].item()
 
-                    # Heuristic: 값의 성격에 따라 Ratio(%) 또는 Delta(Absolute) 적용
-                    # Offset, Bkg, Res 등은 0에 가깝거나 음수이므로 Delta 방식이 안전함
+                    # ratio (%) or delta (absolute) depending on the quantity; offset, bkg, res etc.
+                    # are near zero or negative, so the delta form is safe
                     if any(x in key for x in ["offset", "bkg", "dq", "res", "beam"]):
                         # Absolute Delta Mode
                         p_min = current_val - margin
@@ -259,12 +249,11 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                         # Percentage Ratio Mode (e.g. 0.05 = 5%)
                         p_min = current_val * (1.0 - margin)
                         p_max = current_val * (1.0 + margin)
-                        # 음수 값일 경우 min/max가 뒤집히는 것 방지
+                        # avoid min/max being swapped for negative values
                         if p_min > p_max:
                             p_min, p_max = p_max, p_min
 
-                    # 기존 temp_bounds를 덮어쓰지 않고, 더 좁은 범위(교집합)를 적용할 수도 있지만,
-                    # 여기서는 Smart-Lock이 우선권을 가짐
+                    # smart lock overrides existing temp_bounds instead of intersecting with them
                     current_stage_config.temp_bounds[key] = (p_min, p_max)
 
             stage_name += " (Smart-Lock)"

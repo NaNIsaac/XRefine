@@ -28,27 +28,22 @@ from xrefine.train import XRefineTrainer
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# -----------------------------------------------------------------------------
 # Global Settings
-# -----------------------------------------------------------------------------
 STUDY_NAME = "xrefine_fourier_conv_opt_v1"
 YAML_PATH = Path("config.yaml")
 
 
 def update_config_recursively(config_obj: Any, params: dict[str, Any]):
-    """
-    Optuna params(flat dict)를 Pydantic Config(nested object)에 매핑하는 스마트 함수.
-    [FIX] Pydantic V2 Warning 해결: .model_fields 접근 시 인스턴스가 아닌 클래스 사용.
+    """Map Optuna params (flat dict) onto the nested Pydantic config.
+    Access .model_fields on the class, not the instance, to avoid the Pydantic V2 warning.
     """
     for param_name, param_value in params.items():
         found = False
 
-        # 1. Root Level (e.g. experiment_name)
         if hasattr(config_obj, param_name):
             setattr(config_obj, param_name, param_value)
             found = True
 
-        # 2. Nested Level (model, train, augmentations)
         elif isinstance(config_obj, BaseModel):
             for field_name in type(config_obj).model_fields:
                 sub_obj = getattr(config_obj, field_name)
@@ -63,13 +58,11 @@ def update_config_recursively(config_obj: Any, params: dict[str, Any]):
 
 
 def objective(trial: optuna.Trial):
-    # 1. Config 로드 (기본값 복사)
     base_cfg = (
         XRefineConfig.load_yaml(YAML_PATH) if YAML_PATH.exists() else deepcopy(DEFAULT_CONFIG)
     )
 
-    # 2. Fourier-Conv Dedicated Search Space
-    # -----------------------------------------------------
+    # Fourier-Conv search space
     hparams = {}
 
     # [A] Model Architecture
@@ -93,18 +86,13 @@ def objective(trial: optuna.Trial):
     # [D] Augmentation
     hparams["intensity_noise_scale"] = trial.suggest_float("intensity_noise_scale", 0.05, 0.2)
 
-    # -----------------------------------------------------
-
-    # 3. Apply Params
     update_config_recursively(base_cfg, hparams)
 
-    # HPO용 강제 설정
     base_cfg.model.model_type = "fourier_conv"
     base_cfg.experiment_name = f"optuna_fconv_{trial.number}"
     base_cfg.train.epochs = 15
     base_cfg.save_root = Path("./hpo_temp")
 
-    # 4. Init & Run
     try:
         model = get_model(base_cfg).to(base_cfg.device)
         trainer = XRefineTrainer(model, config=base_cfg)
@@ -148,9 +136,7 @@ def objective(trial: optuna.Trial):
 
 
 def run_hpo(n_trials=50, db_path="hpo_fourier.db"):
-    # [NEW] DB 경로 처리
     db_file = Path(db_path)
-    # 부모 디렉토리가 없으면 생성 (경로 에러 방지)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
     storage_url = f"sqlite:///{db_file.resolve()}"

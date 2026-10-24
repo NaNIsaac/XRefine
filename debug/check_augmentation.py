@@ -9,32 +9,22 @@ from xrefine.data.generator import generate_synthetic_batch
 def check_augmentation_severity():
     print("🔍 Checking Augmentation Severity...")
 
-    # 1. Load Config
     config = XRefineConfig.load_yaml("config.yaml")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     config.device = device
 
-    # 2. Setup Generator & Augmentor
     q_grid = config.q_grid.to(device)
     augmentor = XRRAugmentor(config).to(device)
 
-    # 3. Generate Clean & Augmented Data
-    # generate_synthetic_batch returns augmented data by default if augmenter is passed.
-    # We need to access internal logic to get BOTH clean and augmented.
-    # Or simply:
-
-    # A. Generate Pure Physics (No Augmentation)
     r_clean, params = generate_synthetic_batch(
         batch_size=4,
         q_grid=q_grid,
         config=config,
-        augmenter=None,  # Disable augmentation inside generator
+        augmenter=None,
     )
 
-    # B. Apply Augmentation Manually
     r_aug = augmentor(q_grid.expand(4, -1), r_clean.to(device), params.to(device))
 
-    # 4. Visualization
     r_clean_np = r_clean.detach().cpu().numpy()
     r_aug_np = r_aug.detach().cpu().numpy()
     q_np = q_grid.cpu().numpy()

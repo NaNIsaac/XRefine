@@ -25,7 +25,6 @@ def generate_synthetic_batch(
     device = config.device
     q_grid = q_grid.to(device)
 
-    # 1. Layers Parameters Generation
     thickness_list = []
     roughness_list = []
     sld_real_list = []
@@ -79,9 +78,6 @@ def generate_synthetic_batch(
     amb_sld_i = torch.zeros(batch_size, 1, device=device)
     amb_thickness = torch.zeros(batch_size, 1, device=device)
 
-    # ---------------------------------------------------------
-    # Stack Tensors (B, N) -> For Simulator
-    # ---------------------------------------------------------
     d_stack = torch.stack([amb_thickness] + thickness_list, dim=1).squeeze(-1)
     sigma_stack = torch.stack(roughness_list + [sub_r], dim=1).squeeze(-1)
 
@@ -89,13 +85,11 @@ def generate_synthetic_batch(
     rho_imag_stack = torch.stack([amb_sld_i] + sld_imag_list + [sub_sld_i], dim=1).squeeze(-1)
     sld_stack = torch.complex(rho_stack, rho_imag_stack)
 
-    # 2. Physics Simulation
     if q_grid.dim() == 1:
         q_batch = q_grid.unsqueeze(0).expand(batch_size, -1)
     else:
         q_batch = q_grid
 
-    # 3. ParamSet Packaging
     flat_params = {}
 
     # (1) Layers
@@ -111,8 +105,7 @@ def generate_synthetic_batch(
     flat_params["Substrate.sld_imag"] = sub_sld_i
 
     # (3) Instrument Parameters Generation (Dynamic & Strict)
-    # [FIX] 하드코딩 제거 -> ParamSet.INSTRUMENT_KEYS 사용
-    # ParamSet은 set이므로 정렬해서 순서 보장 (디버깅 용이성)
+    # sorted so the key order is deterministic
     target_keys = sorted(list(ParamSet.INSTRUMENT_KEYS))
 
     for key in target_keys:
@@ -125,7 +118,6 @@ def generate_synthetic_batch(
             val = torch.rand(batch_size, 1, device=device) * (rng[1] - rng[0]) + rng[0]
             flat_params[key] = val
         else:
-            # [STRICT] Config에 정의되지 않은 키가 ParamSet에 요구되면 에러 발생
             raise ValueError(
                 f"🚨 Critical Configuration Error: Parameter '{key}' is required by ParamSet but missing in config.sample!\n"
                 f"   Please check your 'config.yaml' under 'sample:' section."
@@ -147,14 +139,12 @@ def generate_synthetic_batch(
         config.instrument.wavelength,
     )
 
-    # ParamSet 생성
     params = ParamSet(params=flat_params, layer_names=layer_names, device=device)
 
-    # 4. Augmentation
     if augmenter is not None:
         reflectivity = augmenter(q_batch, reflectivity, params)
 
-    # 5. Apply Configurable Normalization (consistent with real data loading)
+    # same normalization as the real-data loader
     from xrefine.data.normalization import apply_normalization_tensor
 
     reflectivity, scale = apply_normalization_tensor(reflectivity, q_grid, config)
@@ -171,7 +161,6 @@ def generate_synthetic_batch(
             # Force target to 1.0 (The model should predict normalized physics)
             params._params["i0"].fill_(1.0)
 
-        # 2. Update Bkg: New_Bkg = Old_Bkg - log10(Scale)
         if "bkg" in params._params:
             params._params["bkg"] = params._params["bkg"] - torch.log10(scale + 1e-12)
 

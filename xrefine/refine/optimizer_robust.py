@@ -14,7 +14,6 @@ from xrefine.logger import logger
 
 
 def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=False):
-    # 1. Setup Data & Config
     device = xrr_config.device
     log_r_obs_gpu = log_r_obs.to(device)
     q_grid = xrr_config.q_grid.to(device)
@@ -24,7 +23,6 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
     if stage_config.q_min:
         mask &= q_grid >= stage_config.q_min
 
-    # 2. Parameter Normalization
     param_info_list = []
     opt_tensor_list = []
 
@@ -32,17 +30,17 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
 
     # Range Lookup Helper
     def get_range(key):
-        # 1. Global Parameters
+        # global parameter
         if hasattr(xrr_config.sample, key):
             return getattr(xrr_config.sample, key)
 
-        # 2. Substrate Parameters
+        # substrate parameter
         if key.startswith("Substrate."):
             sub_key = key.split(".")[-1]
             if hasattr(xrr_config.sample.substrate, sub_key):
                 return getattr(xrr_config.sample.substrate, sub_key)
 
-        # 3. Layer Parameters
+        # layer parameter
         if "." in key:
             layer_name, param_name = key.split(".")
             for layer in xrr_config.sample.layers:
@@ -89,7 +87,6 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
 
     params_to_opt = opt_tensor_list
 
-    # 3. Select Optimizer
     use_lbfgs = "Final" in stage_config.name or "LBFGS" in stage_config.name
     is_sensitive_stage = any(x in stage_config.name for x in ["Thickness", "Shape", "Polish"])
 
@@ -99,7 +96,7 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
         )
         num_steps = max(1, stage_config.maxiter // 4)
     else:
-        # Normalized Space에서는 LR 0.01~0.05 정도가 적절함
+        # in normalized space a learning rate of 0.01 to 0.05 is appropriate
         base_lr = 0.01 if is_sensitive_stage else 0.05
         optimizer = optim.Adam(params_to_opt, lr=base_lr)
         num_steps = stage_config.maxiter
@@ -107,7 +104,6 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
     loss_fn = stage_config.loss_fn
     bounds_map = stage_config.temp_bounds or {}
 
-    # 4. Optimization Loop
     best_loss = float("inf")
     # p_best keeps a *copy* of VALUES, not tensors
     p_best_vals = {k: v.detach().clone() for k, v in reconst_dict.items()}
@@ -145,11 +141,10 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
 
         # [Roughness Penalty]
         # Prevent roughness from killing fringes completely
-        # 1. Thickness > 0 Penalty (Soft Constraint in Normalized Space)
-        # 2. Roughness too high penalty
+        # soft penalties in normalized space: thickness > 0, roughness too high
         pen = 0.0
         # If roughness > 20A, penalize
-        # Note: We are optimization normalized params, but penalty on real values
+        # we optimize normalized params, but the penalty is on real values
         if "Target_Film.roughness" in reconst_dict:
             r_val = reconst_dict["Target_Film.roughness"]
             if r_val > 15.0:

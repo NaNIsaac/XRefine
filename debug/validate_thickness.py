@@ -35,7 +35,7 @@ class ThicknessValidator:
         self.mask = (self.log_r_obs > -14.0) & (self.q_grid > 0.03) & (self.q_grid < 0.45)
 
     def _get_base_params(self):
-        """AI 초기값 + Background 최적화된 파라미터 반환"""
+        """Return the AI initial parameters with the optimized background."""
         with torch.no_grad():
             p_ai, _, _ = self.model(self.log_r_obs)
 
@@ -53,15 +53,15 @@ class ThicknessValidator:
         return p_base
 
     def scan_loss_landscape(self, d_range=None):
-        """Correlation vs Loss Landscape 스캔"""
+        """Scan MSE and correlation over film thickness."""
         if d_range is None:
             d_range = np.linspace(10, 1200, 500)
         p_scan = self._get_base_params()
-        # Oxide 제거 (순수 Film 두께만 보기 위함)
+        # remove the oxide so only the film thickness varies
         p_scan.d_ox.fill_(0.0)
         p_scan.sig_ox.fill_(0.0)
         p_scan.rho_ox.fill_(0.0)
-        p_scan.sig_f.fill_(3.0)  # 고정 Roughness
+        p_scan.sig_f.fill_(3.0)
 
         results = []
 
@@ -72,10 +72,8 @@ class ThicknessValidator:
                 _, r_sim, _ = self.model.forward_with_params(p_scan)
                 log_r_sim = torch.log10(torch.clamp(r_sim, min=1e-12))
 
-                # 1. MSE
                 mse = torch.mean(((log_r_sim - self.log_r_obs) ** 2) * self.mask).item()
 
-                # 2. Correlation (Inverse)
                 sim_m = log_r_sim[self.mask]
                 obs_m = self.log_r_obs[self.mask]
                 vx = sim_m - sim_m.mean()
@@ -90,7 +88,7 @@ class ThicknessValidator:
         return results
 
     def analyze_fft(self):
-        """FFT 기반 두께 추정"""
+        """Estimate the thickness from the FFT of the reflectivity."""
         q = self.q_grid.cpu().numpy()
         log_r = self.log_r_obs.cpu().numpy().flatten()
 
@@ -123,7 +121,7 @@ class ThicknessValidator:
         return peak_info, (thickness, power)
 
     def run_validation(self, output_dir="debug_output"):
-        """종합 검증 실행"""
+        """Run the loss-landscape scan and FFT analysis, print a report and save plots."""
         results = self.scan_loss_landscape()
 
         d_vals = [r["d"] for r in results]
@@ -163,7 +161,6 @@ class ThicknessValidator:
     def _plot_results(self, d, corr, mse, c_cands, m_cands, out_dir):
         plt.figure(figsize=(10, 8))
 
-        # 1. Norm Landscape
         plt.subplot(2, 1, 1)
         c_norm = (corr - np.min(corr)) / (np.max(corr) - np.min(corr))
         m_norm = (mse - np.min(mse)) / (np.max(mse) - np.min(mse))
@@ -182,7 +179,6 @@ class ThicknessValidator:
         plt.legend()
         plt.grid(alpha=0.3)
 
-        # 2. Fit of Top 1 Corr vs Top 1 MSE
         plt.subplot(2, 1, 2)
         q = self.q_grid.cpu().numpy()
         obs = self.log_r_obs.cpu().numpy().flatten()

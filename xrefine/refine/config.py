@@ -31,13 +31,13 @@ class StageConfig:
     grid_range: tuple = (20.0, 1200.0)
     grid_points: int = 500
 
-    # [Hard Bounds] 절대적인 범위 제한 (예: 거칠기 Min 2.0)
+    # hard bounds: absolute limits (e.g. roughness min 2.0)
     temp_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
 
-    # [NEW: Smart Bounds] 현재 값 기준 상대적 제한
-    # Key: 파라미터 이름, Value: 허용 범위 (Ratio or Delta)
-    # 예: {'Target_Film.sld': 0.05} -> 현재 값의 ±5%
-    # 예: {'tth_offset': 0.01} -> 현재 값 ±0.01 (절대값)
+    # smart bounds: limits relative to the current value
+    # key: parameter name, value: allowed range (ratio or delta)
+    # {'Target_Film.sld': 0.05} -> +-5% of the current value
+    # {'tth_offset': 0.01} -> +-0.01 around the current value (absolute)
     relative_bounds: dict[str, float] = field(default_factory=dict)
 
     maxiter: int = 100
@@ -85,10 +85,9 @@ class RefinementConfig:
             | {"Target_Film.thickness", "Top_Layer.thickness", "bkg"}
         )
 
-        # [Revised Strategy]
-        # 1. Scale & Footprint (Low Angle) - Linear Loss for amplitude match
-        # 2. Main Film (Thickness, SLD) - Correlation/Log Loss for frequency match
-        # 3. Fine Tuning (Roughness, etc.) - Log/Hybrid Loss for detail
+        # scale and footprint (low angle): linear loss to match the amplitude
+        # main film (thickness, SLD): correlation/log loss to match the frequency
+        # fine tuning (roughness etc.): log/hybrid loss for detail
 
         return [
             # Stage 1: Scale & Footprint (Absolute Amplitude)

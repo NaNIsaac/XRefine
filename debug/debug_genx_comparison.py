@@ -5,9 +5,7 @@ from genx.models.spec_nx import Instrument, Layer, Sample, Specular, Stack
 
 from xrefine.core.interface import Simulator
 
-# -----------------------------------------------------------------------------
 # Constants & Helpers
-# -----------------------------------------------------------------------------
 r_e = 2.8179403227e-5  # Angstroms
 
 
@@ -65,10 +63,6 @@ def run_xrefine_sim(qs, film_d, film_r, film_sld):
 
     thick_tensor = torch.tensor([[20.0, film_d]], device=device)  # [1, 2]
 
-    # Roughness:
-    # 1. Amb/SiO2: let's say 3.0 (Surface Roughness)
-    # 2. SiO2/Film: let's say 3.0 (Interface)
-    # 3. Film/Sub: let's say 3.0 (Substrate Roughness)
     rough_tensor = torch.tensor([[3.0, 3.0, 3.0]], device=device)  # [1, 3]
 
     q_tensor = torch.from_numpy(qs).float().view(1, -1).to(device)

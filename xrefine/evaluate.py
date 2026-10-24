@@ -26,7 +26,7 @@ from tqdm import tqdm
 # [Imports Updated]
 from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
-from xrefine.core.abeles import AbelesMatrix  # [New] 필수 추가
+from xrefine.core.abeles import AbelesMatrix
 from xrefine.core.smearing import abeles_constant_smearing
 from xrefine.core.structures import ParamSet
 from xrefine.data.augmentations import XRRAugmentor
@@ -64,10 +64,8 @@ class XRREvaluator:
         """Load checkpoint, config, model, and simulator."""
         logger.info(f"🔍 Initializing Evaluator from {self.checkpoint_path}...")
 
-        # 1. Load Checkpoint
         ckpt = load_checkpoint(self.checkpoint_path, map_location=self.device)
 
-        # 2. Config Restore
         config_data = ckpt.get("config")
         if isinstance(config_data, dict):
             self.config = XRefineConfig(**config_data)
@@ -78,15 +76,12 @@ class XRREvaluator:
         self.config.q_grid = self.config.q_grid.to(self.device)
         self.q_grid = self.config.q_grid
 
-        # 3. Model Setup
         self.model = get_model(self.config).to(self.device)
         self.model.load_state_dict(ckpt["model_state_dict"])
         self.model.eval()
 
-        # 4. Simulator Setup (Essential for Generator)
         self.simulator = AbelesMatrix(device=self.device)
 
-        # 5. History Restore
         self.history = ckpt.get("history", {})
         logger.info(f"Setup complete. Model: {self.config.model.model_type.upper()}")
 
@@ -105,7 +100,6 @@ class XRREvaluator:
         logger.info(f"🚀 Running Inference on {self.batch_size} synthetic samples...")
 
         for _ in tqdm(range(num_iters), desc="Inference"):
-            # [FIX] Simulator 주입 필수 (Generator API 변경 반영)
             r_t_batch, p_t_batch = generate_synthetic_batch(
                 batch_size=split_size,
                 q_grid=self.q_grid,
@@ -120,7 +114,7 @@ class XRREvaluator:
             # p_t_batch is a ParamSet, handled internally.
 
             # Preprocessing (Log & Clamp)
-            # 학습 때와 동일한 전처리를 위해 1e-15 clamp 사용 (Masking Value 보존)
+            # same preprocessing as training: clamp at 1e-15 preserves the masking value
             log_r_in = torch.log10(torch.clamp(r_t_gpu, min=1e-15))
 
             # Forward (No Fixed Values)
@@ -150,12 +144,10 @@ class XRREvaluator:
         """Calculate statistical metrics and create DataFrame."""
         logger.info("📊 Calculating statistics...")
 
-        # 1. Curve Metrics (Log MSE)
         log_t = torch.log10(torch.clamp(self.r_true, min=1e-15))
         log_p = torch.log10(torch.clamp(self.r_pred, min=1e-15))
         mse_per_sample = torch.mean((log_t - log_p) ** 2, dim=1).numpy()
 
-        # 2. Parameter Metrics
         all_res = []
         # DynamicParamSet uses _params dict
         keys = list(self.p_true._params.keys())
@@ -197,12 +189,10 @@ class XRREvaluator:
         inst = [k for k in keys if k not in core]
         return core, inst
 
-    # =========================================================================
     # Visualizations
-    # =========================================================================
 
     def plot_best_worst_cases(self, n=3):
-        """[1] 상위/하위 n개 샘플 비교 시각화"""
+        """Plot the n best and n worst samples."""
         sample_mse = self.results_df.groupby("Sample_ID")["LogMSE"].first().sort_values()
 
         best_indices = sample_mse.index[:n].values
@@ -287,7 +277,7 @@ class XRREvaluator:
         plt.close()
 
     def plot_training_curves(self):
-        """[2] 학습 곡선 (Loss & Weights)"""
+        """Plot training curves (loss and weights)."""
         if not self.history:
             return
 
@@ -319,7 +309,7 @@ class XRREvaluator:
         plt.close()
 
     def plot_error_vs_value(self):
-        """[3] Error vs Value 산점도 (물리적 편향 확인)"""
+        """Scatter plot of error vs value to show physical bias."""
         core, _ = self._split_params()
         if not core:
             return
@@ -432,7 +422,7 @@ class XRREvaluator:
             )
 
     def report_physical_consistency(self):
-        """[5] 물리적 일관성 체크 리포트"""
+        """Report physical-consistency checks."""
         layer_names = set([k.split(".")[0] for k in self.metrics_summary.keys() if "." in k])
 
         lines = ["\n[Physical Consistency Check (Roughness < 0.5 * Thickness)]"]

@@ -25,7 +25,6 @@ def run_benchmark(
     n_random: int = 3,
     save_dir: str = "./benchmark_results",
 ):
-    # 1. Load Setup
     ckpt = load_checkpoint(checkpoint_path)
     config_data = ckpt.get("config")
     if isinstance(config_data, dict):
@@ -48,7 +47,6 @@ def run_benchmark(
     save_path = Path(save_dir)
     save_path.mkdir(exist_ok=True, parents=True)
 
-    # 2. Generate Cases
     test_cases = []
 
     # (A) Manual Case
@@ -83,7 +81,6 @@ def run_benchmark(
             r_single = log_r_batch[i : i + 1]
             test_cases.append((f"Random_{i}", p_single, r_single))
 
-    # 3. Run Benchmark
     for name, p_true, log_r in test_cases:
         logger.info(f"📦 Benchmarking: {name}")
 
@@ -124,16 +121,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # [UPDATE] 복소수(흡수율)가 포함된 테스트 케이스 정의
-    # 키 이름은 config.yaml의 레이어 이름과 일치해야 함 (동적 파라미터 구조 반영)
+    # test case with complex SLD (absorption); keys must match the layer names in config.yaml
     manual_case = {
         "Target_Film.thickness": 354.0,
         "Target_Film.roughness": 5.0,
         "Target_Film.sld": 49.6,
-        "Target_Film.sld_imag": 2.5,  # [New] 흡수율 테스트
+        "Target_Film.sld_imag": 2.5,
         "Top_Layer.thickness": 18.3,
         "Top_Layer.sld": 14.1,
-        "Top_Layer.sld_imag": 0.1,  # [New] 미세 흡수
+        "Top_Layer.sld_imag": 0.1,
     }
 
     run_benchmark(

@@ -1,9 +1,8 @@
-"""
-Vision Transformer (ViT) Physics-Informed Neural Network
+"""Vision Transformer (ViT) Physics-Informed Neural Network
 =========================================================
-XRR 데이터를 패치 기반으로 처리하는 ViT 아키텍처.
+ViT architecture that processes XRR data as patches.
 
-구조:
+Structure:
 1. Input (Log R) -> [Optional] Fourier Feature -> Patch Embedding
 2. [CLS] Token + Positional Encoding
 3. Transformer Encoder (Self-Attention)
@@ -34,7 +33,6 @@ class FourierViTPINN(nn.Module):
         fourier_scale = getattr(config.model, "fourier_scale", 40.0)
         input_len = config.q_len
 
-        # 1. Optional Fourier Feature
         self.use_fourier = mapping_size > 0
         if self.use_fourier:
             self.fourier = FourierFeatureMapping(
@@ -51,7 +49,6 @@ class FourierViTPINN(nn.Module):
         # Stride=4 creates 75% overlap with Patch=16
         self.stride = patch_size // 4
 
-        # 2. Patch Embedding
         self.patch_embed = PatchEmbed1D(
             in_channels=in_channels, embed_dim=embed_dim, patch_size=patch_size, stride=self.stride
         )
@@ -59,12 +56,10 @@ class FourierViTPINN(nn.Module):
         # Correct formula for Conv1d output size
         num_patches = (input_len - patch_size) // self.stride + 1
 
-        # 3. Learnable Tokens
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=config.model.dropout)
 
-        # 4. Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
@@ -77,7 +72,6 @@ class FourierViTPINN(nn.Module):
         self.blocks = nn.TransformerEncoder(encoder_layer, num_layers=depth)
         self.norm = nn.LayerNorm(embed_dim)
 
-        # 5. Prediction Head
         self.head = nn.Sequential(
             nn.Linear(embed_dim, embed_dim * 2),
             nn.GELU(),
@@ -144,9 +138,8 @@ from xrefine.models import register_model
 
 @register_model("vit")
 class XRR_ViT_PINN(BasePINNModel):
-    """
-    Vision Transformer 기반 PINN 모델.
-    패치 기반 처리로 지역/전역 패턴 동시 포착.
+    """Vision Transformer based PINN model.
+    Patch-based processing captures local and global patterns together.
     """
 
     def __init__(self, config: XRefineConfig):
@@ -154,5 +147,4 @@ class XRR_ViT_PINN(BasePINNModel):
         self.encoder_net = FourierViTPINN(config, self.output_dim)
 
     def encode(self, x: Tensor) -> Tensor:
-        """ViT Encoder로 파라미터 추출"""
         return self.encoder_net(x)

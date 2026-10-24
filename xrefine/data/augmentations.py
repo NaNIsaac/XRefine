@@ -46,16 +46,13 @@ class XRRAugmentor(nn.Module):
 
         padding = kernel_size // 2
 
-        # 1. Create Kernel Grid (GPU)
         x = torch.linspace(-padding, padding, kernel_size, device=R.device)
 
-        # 2. Gaussian Kernel Construction (Broadcasting)
         # sigma_px: (B, 1)
         sigma_px = res_sigma / (dq + 1e-9)
         kernel = torch.exp(-0.5 * (x.view(1, kernel_size) / sigma_px) ** 2)
         kernel = kernel / (kernel.sum(dim=-1, keepdim=True) + 1e-9)
 
-        # 3. Conv1d with Groups (Batch Processing)
         # Input: (1, B, Q)
         # Weight: (B, 1, K)
         inp = R.unsqueeze(1)
@@ -96,12 +93,11 @@ class XRRAugmentor(nn.Module):
 
             split_in = split.unsqueeze(1)
 
-            # 1. Downsample (Loss of information)
+            # downsample then upsample back to Q points; the round trip loses information
             split_coarse = F.interpolate(
                 split_in, size=target_len, mode="linear", align_corners=True
             )
 
-            # 2. Upsample (Restore grid for model input)
             split_recon = F.interpolate(split_coarse, size=Q, mode="linear", align_corners=True)
             results.append(split_recon.squeeze(1))
 
@@ -114,17 +110,13 @@ class XRRAugmentor(nn.Module):
         device = R.device
         n_q = Q
 
-        # 0. NaN Protection
         R = torch.nan_to_num(R, nan=1e-11, posinf=1.0, neginf=1e-11)
 
-        # 1. Resampling
         R_aug = self.apply_resampling(R)
 
-        # 2. Scaling & Background (Tensor ops)
         R_aug = R_aug * params.i0 + torch.pow(10.0, params.bkg)
         R_aug = torch.nan_to_num(R_aug, nan=1e-11).clamp(min=0.0)
 
-        # 3. Shot Noise (Poisson)
         noise_factor = 1.0 / (self.aug_cfg.intensity_noise_scale + 1e-6)
         s_rand = torch.pow(10.0, torch.rand(B, 1, device=device) * 2 + 5) * noise_factor
 
@@ -133,7 +125,6 @@ class XRRAugmentor(nn.Module):
 
         R_aug = torch.poisson(poisson_rate) / (s_rand + 1e-9)
 
-        # 4. Masking
         # (A) Low-Q Masking
         low_q_cut = torch.rand(B, 1, device=device) * 0.015 + 0.005
         mask_low = q < low_q_cut

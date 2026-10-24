@@ -30,10 +30,6 @@ from xrefine.physics_utils_enhanced import (
     soft_clamp_min,
 )
 
-# ==============================================================================
-# 1. Feature Encoding Modules (Unchanged from original)
-# ==============================================================================
-
 
 class FourierFeatureMapping(nn.Module):
     """
@@ -81,11 +77,6 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, : x.size(1), :]
 
 
-# ==============================================================================
-# 2. Enhanced Base PINN Model
-# ==============================================================================
-
-
 class BasePINNModelEnhanced(nn.Module, ABC):
     """
     Enhanced PINN model with curriculum learning and soft constraints.
@@ -124,7 +115,6 @@ class BasePINNModelEnhanced(nn.Module, ABC):
         """
         mapping = []
 
-        # 1. Layers
         for layer in config.sample.layers:
             mapping.append((f"{layer.name}.thickness", layer.thickness))
             mapping.append((f"{layer.name}.roughness", layer.roughness))
@@ -133,14 +123,12 @@ class BasePINNModelEnhanced(nn.Module, ABC):
             if getattr(layer, "sld_imag", None) is not None:
                 mapping.append((f"{layer.name}.sld_imag", layer.sld_imag))
 
-        # 2. Substrate
         mapping.append(("Substrate.roughness", config.sample.substrate.roughness))
         mapping.append(("Substrate.sld", config.sample.substrate.sld))
 
         if getattr(config.sample.substrate, "sld_imag", None) is not None:
             mapping.append(("Substrate.sld_imag", config.sample.substrate.sld_imag))
 
-        # 3. Instrument (Global)
         for key in ParamSet.INSTRUMENT_KEYS:
             if hasattr(config.sample, key):
                 rng = getattr(config.sample, key)
@@ -162,12 +150,11 @@ class BasePINNModelEnhanced(nn.Module, ABC):
         vals = torch.split(raw_output, 1, dim=1)
         params_dict = {}
 
-        # 1. Base: Convert Network Predictions to Physical Values
         for (key, (p_min, p_max)), val in zip(self.param_map, vals, strict=False):
             physical_val = val * (p_max - p_min) + p_min
             params_dict[key] = physical_val
 
-        # 2. Override: Apply Fixed Value Constraints
+        # fixed values override the predictions
         if fixed_values is not None:
             for key, target_val in fixed_values._params.items():
                 if key in params_dict:
@@ -266,11 +253,6 @@ class BasePINNModelEnhanced(nn.Module, ABC):
         penalty = self.validate_physics(params)
 
         return params, r_final, penalty
-
-
-# ==============================================================================
-# 3. Patch Embedding (Unchanged from original)
-# ==============================================================================
 
 
 class PatchEmbed1D(nn.Module):

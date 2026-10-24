@@ -17,7 +17,6 @@ from xrefine.refine.losses import LossFn
 
 
 def get_bounds_from_config(config: XRefineConfig, key: str) -> tuple[float, float]:
-    # (기존 로직 동일)
     sample = config.sample
     parts = key.split(".")
     try:
