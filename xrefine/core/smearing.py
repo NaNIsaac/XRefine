@@ -80,6 +80,14 @@ def abeles_constant_smearing(
     return smeared_curves
 
 
+def apply_tth_offset(q: Tensor, offset_deg: Tensor, wavelength: float) -> Tensor:
+    """q as the instrument records it when its 2θ zero is off by ``offset_deg``: q to 2θ, plus
+    the offset in degrees, back to q. Differentiable; q (Q,) or (B, Q), offset_deg (B, 1)."""
+    sin_th = (q * wavelength / (4.0 * pi)).clamp(-1.0, 1.0)
+    tth = 2.0 * torch.rad2deg(torch.asin(sin_th)) + offset_deg
+    return (4.0 * pi / wavelength) * torch.sin(torch.deg2rad(0.5 * tth))
+
+
 def instrument_reflectivity(
     q, thickness, roughness, sld, sample_length, beam_width, dq, tth_offset, simulator, wavelength
 ):
@@ -90,7 +98,7 @@ def instrument_reflectivity(
     draws back come from one forward model.
     """
     if tth_offset is not None:
-        q = q + tth_offset * 0.01
+        q = apply_tth_offset(q, tth_offset, wavelength)
     if dq is not None and dq.mean() > 1e-5:
         return abeles_constant_smearing(
             q=q,
