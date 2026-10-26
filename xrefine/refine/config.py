@@ -6,12 +6,9 @@ Now you can define dynamic constraints (Smart-Lock) directly in the stage defini
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from xrefine.refine.losses import (
     CORRELATION,
-    FRINGE_WEIGHTED_LOG,
-    HYBRID_LOSS,
     LINEAR_MSE,
     LOG_MSE,
     LossFn,

@@ -26,9 +26,7 @@ def get_model(config) -> BasePINNModel:
     if model_type not in MODEL_REGISTRY:
         # Import all models to ensure registration
         # Importing a model registers it, so this order is the order of MODEL_REGISTRY.
-        from .vit import FourierViTPINN  # noqa: I001
-        from .transformer import LatentTransPINN
-        from .fourier_model import FourierConvPINN
+        from . import vit, transformer, fourier_model  # noqa: F401, I001
 
     if model_type not in MODEL_REGISTRY:
         raise ValueError(
@@ -47,11 +45,11 @@ from .common import (
 )
 
 __all__ = [
-    "BasePINNModel",
-    "register_model",
-    "get_model",
     "MODEL_REGISTRY",
+    "BasePINNModel",
     "FourierFeatureMapping",
-    "PositionalEncoding",
     "PatchEmbed1D",
+    "PositionalEncoding",
+    "get_model",
+    "register_model",
 ]

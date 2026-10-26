@@ -1,5 +1,4 @@
 import os
-from copy import deepcopy
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -9,7 +8,6 @@ from scipy.signal import detrend, find_peaks
 
 from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
-from xrefine.core.structures import ParamSet
 from xrefine.models import XRR_Fourier_PINN
 from xrefine.predict_real import _optimize_subset, load_real_data
 
@@ -139,7 +137,7 @@ class ThicknessValidator:
         mse_cands.sort(key=lambda x: x[1])
 
         # FFT Validation
-        fft_peaks, (d_fft, p_fft) = self.analyze_fft()
+        fft_peaks, (_d_fft, _p_fft) = self.analyze_fft()
 
         # Print Report
         print(f"\n===== Thickness Validation: {Path(self.data_path).name} =====")

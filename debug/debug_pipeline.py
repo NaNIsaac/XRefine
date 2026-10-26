@@ -33,7 +33,7 @@ def debug():
     else:
         print("✅ Generator output varies.")
 
-    t, rough, sld = params
+    t, _rough, _sld = params
     print(f"Thickness samples: {t.flatten().cpu().numpy()}")
 
     print("\n[2] Testing Model Forward...")
@@ -43,7 +43,7 @@ def debug():
     inp = torch.log10(r + 1e-12)
     pred_params, r_recon = model(inp)
 
-    pt, pr, ps = pred_params
+    pt, _pr, _ps = pred_params
     print(f"Pred Thickness: {pt.flatten().detach().cpu().numpy()}")
 
     if pt.std() < 1e-5:

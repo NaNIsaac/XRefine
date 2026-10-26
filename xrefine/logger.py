@@ -46,8 +46,8 @@ if __name__ == "__main__":
 
     try:
         raise ValueError("This is a test exception.")
-    except ValueError as e:
-        logger.exception(f"An exception occurred: {e}")
+    except ValueError:
+        logger.exception("An exception occurred")
 
     metadata = {"key1": "value1", "key2": "value2"}
     logger.info(metadata)

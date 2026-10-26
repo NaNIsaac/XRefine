@@ -9,5 +9,5 @@ Usage:
     trainer.train()
 """
 
-from xrefine.train.trainer import XRefineTrainer
+from xrefine.train.trainer import XRefineTrainer as XRefineTrainer
 from xrefine.train.utils import *

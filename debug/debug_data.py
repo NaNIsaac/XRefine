@@ -10,7 +10,7 @@ def debug_data_pipeline():
     print(f"🕵️ 데이터 생성기 검증 시작 ({device})")
 
     for i in tqdm(range(300)):
-        r_noisy, params = generate_synthetic_batch(
+        r_noisy, _params = generate_synthetic_batch(
             batch_size=CONFIG.batch_size, q_grid=CONFIG.q_grid.to(device), config=CONFIG
         )
 

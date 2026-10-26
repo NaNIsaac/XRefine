@@ -1,12 +1,11 @@
 import argparse
 import pathlib
-import shutil
 from pathlib import Path
 
 import torch
 
 
-def convert_checkpoint(ckpt_path: str, output_path: str = None):
+def convert_checkpoint(ckpt_path: str, output_path: str | None = None):
     """Convert a checkpoint saved on Linux (PosixPath objects) so it loads on Windows."""
     src_path = Path(ckpt_path)
     if not src_path.exists():

@@ -1,6 +1,5 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import optim
 from torch.profiler import ProfilerActivity, profile, record_function
 
 from xrefine.config import CONFIG
@@ -54,7 +53,7 @@ def deep_profiling():
                 log_r_obs = torch.log10(torch.clamp(r_meas, min=1e-15)).float()
 
             with record_function("2_Forward_Pass"):
-                p_pred, r_recon, aux = model(log_r_obs)
+                p_pred, r_recon, _aux = model(log_r_obs)
 
             with record_function("3_Loss_Calc"):
                 loss, _, _, _, _ = criterion(p_pred, r_recon, log_r_obs, p_true, config, 1.0, 0.0)

@@ -4,6 +4,8 @@ Unit Tests for Enhanced Gradient Flow
 Tests to verify soft clamping preserves gradients at boundaries.
 """
 
+import sys
+
 import torch
 
 from xrefine.physics_utils_enhanced import (
@@ -35,7 +37,7 @@ def test_gradient_preservation():
     y_soft.backward()
     grad_soft = x.grad.item()
 
-    print(f"Input: x = 2.0 (beyond upper bound of 1.0)")
+    print("Input: x = 2.0 (beyond upper bound of 1.0)")
     print(f"Hard clamp gradient: {grad_hard:.6f} (gradient blocked!)")
     print(f"Soft clamp gradient: {grad_soft:.6f} (gradient preserved!)")
 
@@ -190,4 +192,4 @@ def run_all_tests():
 
 if __name__ == "__main__":
     success = run_all_tests()
-    exit(0 if success else 1)
+    sys.exit(0 if success else 1)

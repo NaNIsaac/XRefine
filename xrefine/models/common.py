@@ -8,11 +8,9 @@ Shared modules to avoid duplication:
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from xrefine.config import XRefineConfig
 from xrefine.core.abeles import AbelesMatrix

@@ -106,7 +106,7 @@ def generate_synthetic_batch(
 
     # (3) Instrument Parameters Generation (Dynamic & Strict)
     # sorted so the key order is deterministic
-    target_keys = sorted(list(ParamSet.INSTRUMENT_KEYS))
+    target_keys = sorted(ParamSet.INSTRUMENT_KEYS)
 
     for key in target_keys:
         rng = None

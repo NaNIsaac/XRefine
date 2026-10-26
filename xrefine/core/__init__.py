@@ -11,13 +11,13 @@ from .numpy_implementations import (
 from .smearing import abeles_constant_smearing
 
 __all__ = [
-    "simulate_reflectivity",
     "abeles",
+    "abeles_constant_smearing",
     "abeles_memory_eff",
     "abeles_np",
     "kinematical_approximation",
     "kinematical_approximation_np",
-    "abeles_constant_smearing",
+    "simulate_reflectivity",
 ]
 
 

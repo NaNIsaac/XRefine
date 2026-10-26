@@ -98,15 +98,15 @@ def format_config_summary(config: XRefineConfig) -> str:
     lines.append(f"\n{line}\n[ENHANCED SESSION CONFIGURATION]\n{line}")
 
     lines.append(f"Experiment : {config.experiment_name}")
-    lines.append(f"Model Class: FourierConvPINNEnhanced (Forced)")
+    lines.append("Model Class: FourierConvPINNEnhanced (Forced)")
     lines.append(f"Device     : {config.device}")
 
     lines.append(f"{'-' * 60}")
-    lines.append(f"Enhanced Features Active:")
-    lines.append(f"  ✓ Soft clamping for gradient preservation")
-    lines.append(f"  ✓ Curriculum learning for progressive constraints")
-    lines.append(f"  ✓ Dynamic bounds for physical validity")
-    lines.append(f"  ✓ Robust numerical operations")
+    lines.append("Enhanced Features Active:")
+    lines.append("  ✓ Soft clamping for gradient preservation")
+    lines.append("  ✓ Curriculum learning for progressive constraints")
+    lines.append("  ✓ Dynamic bounds for physical validity")
+    lines.append("  ✓ Robust numerical operations")
 
     lines.append(f"{'-' * 60}")
     lines.append(f"{'CATEGORY':<12} | {'PARAMETER':<15} | {'VALUE'}")

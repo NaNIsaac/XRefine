@@ -112,9 +112,6 @@ def main():
     sld_t = torch.tensor([[0.0, sld_film, sld_sub]], dtype=torch.float64)
     q_t = torch.from_numpy(qs).double().view(1, -1)
 
-    device = "cpu"
-    sim = Simulator(method="abeles", device=device)
-
     # We must call internal simulator directly to control tensors precisely
     # passing tensors to internal `abeles` function or use sim forward
     # Sim forward handles device but we are on CPU.

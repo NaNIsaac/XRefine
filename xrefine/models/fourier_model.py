@@ -1,6 +1,5 @@
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from xrefine.config import XRefineConfig
 from xrefine.constants import LOG_MASK_VALUE
@@ -18,7 +17,6 @@ class FourierConvEncoder(nn.Module):
         super().__init__()
 
         # Hyperparameter Mapping
-        q_len = config.q_len
         n_channels = config.model.hidden_dim
         depth = config.model.encoder_depth
         mlp_hidden = config.model.dim_feedforward

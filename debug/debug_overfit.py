@@ -49,7 +49,7 @@ def debug_overfit():
         # Forward
         params_pred, r_recon, phys_penalty = model(input_log_r)
 
-        total_loss, l_recon, l_param, p_phys = criterion(
+        total_loss, l_recon, _l_param, _p_phys = criterion(
             params_pred,
             r_recon,
             input_log_r,

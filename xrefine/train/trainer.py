@@ -1,10 +1,9 @@
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
-import torch.optim as optim
+from torch import optim
 from torch.utils.tensorboard import SummaryWriter
 
 from xrefine.checkpoint import load_checkpoint
@@ -20,7 +19,7 @@ torch.backends.cudnn.benchmark = True
 
 def is_colab() -> bool:
     try:
-        import google.colab
+        import google.colab  # noqa: F401 - the import is the test
 
         return True
     except ImportError:
@@ -31,9 +30,6 @@ IN_COLAB = is_colab()
 
 # standard tqdm; the notebook version conflicts with loguru
 from tqdm import tqdm
-
-if IN_COLAB:
-    from IPython.display import clear_output
 
 
 def log_epoch(msg: str):
@@ -328,7 +324,7 @@ class XRefineTrainer:
                 self._save_checkpoint("emergency_error.pt", epoch if "epoch" in dir() else 0)
                 self.backup_to_drive(force=True)
                 logger.info("✅ Emergency backup complete.")
-            except:
+            except Exception:
                 pass
             raise
         finally:

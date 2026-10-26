@@ -1,14 +1,12 @@
 from pathlib import Path
-from typing import Optional
 
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from matplotlib import gridspec
+from torch import nn
 
-from xrefine.config import SampleConfig, XRefineConfig
+from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 
 plt.switch_backend("Agg")
@@ -80,7 +78,7 @@ class XRRWeightedLoss(nn.Module):
         loss_param = torch.tensor(0.0, device=log_r_target.device)
 
         # We assume p_true has all keys that p_pred has
-        for key in p_pred._params.keys():
+        for key in p_pred._params:
             # Skip non-learnable or fixed params if we track them?
             # DynamicParamSet usually only contains learnable stuff + sampled globals.
 
@@ -194,7 +192,7 @@ def save_pinn_report(
     if params_true:
         info_lines.append("\n--- Parameters (Pred vs True) ---")
         # Sort keys to group by layer?
-        keys = sorted(list(params_pred._params.keys()))
+        keys = sorted(params_pred._params)
 
         # Limit display if too many params
         display_keys = keys[:15]  # Show top 15
@@ -226,7 +224,12 @@ def save_pinn_report(
         info_text,
         fontsize=9,
         family="monospace",
-        bbox=dict(facecolor="white", alpha=0.9, edgecolor="#34495e", boxstyle="round,pad=0.5"),
+        bbox={
+            "facecolor": "white",
+            "alpha": 0.9,
+            "edgecolor": "#34495e",
+            "boxstyle": "round,pad=0.5",
+        },
         verticalalignment="bottom",
     )
 
