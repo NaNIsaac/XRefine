@@ -2,7 +2,6 @@ import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,7 +12,7 @@ from scipy.signal import find_peaks
 from scipy.stats import qmc
 
 from xrefine.checkpoint import load_checkpoint
-from xrefine.config import CONFIG, XRefineConfig
+from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
 from xrefine.logger import logger
 from xrefine.models import get_model
@@ -77,7 +76,7 @@ def _optimize_subset(
     log_r_obs: torch.Tensor,
     config: XRefineConfig,
     optimize_keys: set[str],
-    forced_params: dict[str, float] = None,
+    forced_params: dict[str, float] | None = None,
     q_min: float | None = None,
     q_max: float | None = None,
     use_gradient_loss: bool = False,
@@ -182,7 +181,7 @@ def _optimize_subset(
 
                 return float((loss + penalty + r_pen).item())
 
-        except Exception as e:
+        except Exception:
             return 1e9
 
     sampler = qmc.LatinHypercube(d=total_dim)

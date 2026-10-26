@@ -6,8 +6,8 @@ GPU-accelerated physics augmentation without CPU synchronization overhead.
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet

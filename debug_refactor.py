@@ -58,7 +58,7 @@ def test_model_flow():
     # Dummy Target (p_true)
     p_true = fixed_values
 
-    loss_main, _, _, _, loss_param = criterion(
+    _loss_main, _, _, _, loss_param = criterion(
         params_pred, r_recon, r_obs_log, p_true, config, curr_sup_w=1.0, phys_penalty=penalty
     )
     print(f"✅ Loss calculation successful. Loss Param: {loss_param.item()}")

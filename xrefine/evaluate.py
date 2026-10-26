@@ -13,21 +13,19 @@ Features:
 """
 
 from pathlib import Path
-from typing import Optional
 
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+from matplotlib import gridspec
 from tqdm import tqdm
 
 # [Imports Updated]
 from xrefine.checkpoint import load_checkpoint
 from xrefine.config import XRefineConfig
 from xrefine.core.abeles import AbelesMatrix
-from xrefine.core.smearing import abeles_constant_smearing
 from xrefine.core.structures import ParamSet
 from xrefine.data.augmentations import XRRAugmentor
 from xrefine.data.generator import generate_synthetic_batch
@@ -182,7 +180,7 @@ class XRREvaluator:
         self.results_df.to_csv(self.exp_dir / "eval_metrics_full.csv", index=False)
 
     def _split_params(self) -> tuple[list[str], list[str]]:
-        keys = sorted(list(self.metrics_summary.keys()))
+        keys = sorted(self.metrics_summary)
         core_keywords = ["thickness", "roughness", "sld"]  # 'sld_imag' also contains 'sld'
 
         core = [k for k in keys if any(c in k for c in core_keywords)]
@@ -203,7 +201,7 @@ class XRREvaluator:
 
         q = self.q_grid.cpu().numpy()
 
-        fig = plt.figure(figsize=(20, 4 * len(indices)))
+        plt.figure(figsize=(20, 4 * len(indices)))
         gs = gridspec.GridSpec(len(indices), 2, width_ratios=[2, 1])
 
         for i, (idx, title) in enumerate(zip(indices, titles, strict=False)):
@@ -227,7 +225,6 @@ class XRREvaluator:
 
             # Clean Table Logic
             text_data = [["Parameter", "True", "Pred", "Diff", "Err%"]]
-            colors = []
 
             # Sort by Parameter name for consistency
             sample_df = sample_df.sort_values("Parameter")
@@ -281,7 +278,7 @@ class XRREvaluator:
         if not self.history:
             return
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        _fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
         # Loss
         ax = axes[0]
@@ -317,16 +314,14 @@ class XRREvaluator:
         n_cols = 3
         n_rows = (len(core) + n_cols - 1) // n_cols
 
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+        _fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
         axes = axes.flatten()
 
         for i, key in enumerate(core):
             sub = self.results_df[self.results_df["Parameter"] == key]
             ax = axes[i]
 
-            sc = ax.scatter(
-                sub["True"], sub["AbsError"], alpha=0.2, c=sub["LogMSE"], cmap="viridis"
-            )
+            ax.scatter(sub["True"], sub["AbsError"], alpha=0.2, c=sub["LogMSE"], cmap="viridis")
             sns.regplot(
                 x="True",
                 y="AbsError",
@@ -372,7 +367,7 @@ class XRREvaluator:
 
             n_cols = 4
             n_rows = (len(keys) + n_cols - 1) // n_cols
-            fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+            _fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
             axes = axes.flatten()
 
             for i, key in enumerate(keys):
@@ -423,7 +418,7 @@ class XRREvaluator:
 
     def report_physical_consistency(self):
         """Report physical-consistency checks."""
-        layer_names = set([k.split(".")[0] for k in self.metrics_summary.keys() if "." in k])
+        layer_names = {k.split(".")[0] for k in self.metrics_summary if "." in k}
 
         lines = ["\n[Physical Consistency Check (Roughness < 0.5 * Thickness)]"]
         lines.append(f"{'Layer':<15} | {'Violation Ratio':<15} | {'Avg Violation (Å)'}")

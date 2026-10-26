@@ -29,7 +29,7 @@ def check_augmentation_severity():
     r_aug_np = r_aug.detach().cpu().numpy()
     q_np = q_grid.cpu().numpy()
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    _fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     axes = axes.flatten()
 
     for i in range(4):

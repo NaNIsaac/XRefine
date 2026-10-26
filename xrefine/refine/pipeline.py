@@ -17,11 +17,10 @@ from xrefine.config import XRefineConfig
 from xrefine.constants import LOG_MASK_VALUE, LOG_VALID_THRESHOLD
 from xrefine.core.abeles import AbelesMatrix
 from xrefine.core.smearing import abeles_constant_smearing
-from xrefine.core.structures import ParamSet
 from xrefine.logger import logger
 from xrefine.models import get_model
 from xrefine.physics_utils import tth2q
-from xrefine.refine.config import DEFAULT_CONFIG, RefinementConfig, StageConfig
+from xrefine.refine.config import DEFAULT_CONFIG
 from xrefine.refine.optimizer import optimize_step
 from xrefine.refine.pipeline_next import pre_fit_i0  # [NEW] Import pre_fit_i0
 
@@ -269,7 +268,7 @@ def run_refinement(model, p_init, log_r_obs, xrr_config, refine_config=None):
                 new_min = max(20.0, current_d * (1.0 - margin))
                 new_max = current_d * (1.0 + margin)
                 current_stage_config.grid_range = (new_min, new_max)
-                stage_name += f" (Trust Grid)"
+                stage_name += " (Trust Grid)"
 
         if current_stage_config.use_grid_search:
             best_val = grid_search_thickness(
@@ -373,7 +372,7 @@ def run_real_inference(
     output_path.mkdir(parents=True, exist_ok=True)
     data_name = Path(data_path).stem
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fig, ax = plt.subplots(figsize=(10, 6))
+    _fig, ax = plt.subplots(figsize=(10, 6))
     q = q_grid_np
     y_obs = 10 ** masked_input[0].cpu().numpy()
     valid_mask = (masked_input[0].cpu().numpy() > LOG_VALID_THRESHOLD) & (q <= actual_cutoff)
@@ -387,7 +386,7 @@ def run_real_inference(
     ax.legend(loc="upper right", frameon=True)
     ax.grid(True, which="both", ls="-", alpha=0.2)
     if valid_mask.any():
-        q_min, q_max = q[valid_mask].min(), q[valid_mask].max()
+        q_max = q[valid_mask].max()
         ax.set_xlim(0, max(q_max * 1.1, 0.2))
         y_min_data = y_obs[valid_mask].min()
         ax.set_ylim(bottom=max(y_min_data * 0.1, 1e-10), top=2.0)

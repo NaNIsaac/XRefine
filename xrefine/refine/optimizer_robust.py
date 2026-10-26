@@ -7,7 +7,7 @@ Update: Implements 'Adaptive Gradient Clipping'.
 """
 
 import torch
-import torch.optim as optim
+from torch import optim
 
 from xrefine.constants import LOG_VALID_THRESHOLD
 from xrefine.logger import logger
@@ -102,7 +102,6 @@ def optimize_step(model, p_init, log_r_obs, xrr_config, stage_config, verbose=Fa
         num_steps = stage_config.maxiter
 
     loss_fn = stage_config.loss_fn
-    bounds_map = stage_config.temp_bounds or {}
 
     best_loss = float("inf")
     # p_best keeps a *copy* of VALUES, not tensors

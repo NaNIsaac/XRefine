@@ -28,14 +28,14 @@ def test_phase1_dynamic_system():
         print(f"   Param Keys: {list(params._params.keys())[:5]}...")
 
         # Test Assembly
-        t, r, s = params.assemble_structure()
+        t, _r, _s = params.assemble_structure()
         print(f"   Assembled T shape: {t.shape}")
     except Exception as e:
         print(f"❌ ParamSet Failed: {e}")
         return
 
     try:
-        r_batch, params_gt = generate_synthetic_batch(2, config.q_grid, config)
+        r_batch, _params_gt = generate_synthetic_batch(2, config.q_grid, config)
         print(f"✅ Generator Output: {r_batch.shape}")
     except Exception as e:
         print(f"❌ Generator Failed: {e}")

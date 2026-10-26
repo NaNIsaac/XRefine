@@ -11,7 +11,6 @@ from scipy.stats import qmc
 from xrefine.config import XRefineConfig
 from xrefine.constants import LOG_VALID_THRESHOLD
 from xrefine.core.structures import ParamSet
-from xrefine.logger import logger
 from xrefine.refine.config import StageConfig
 from xrefine.refine.losses import LossFn
 
@@ -29,7 +28,7 @@ def get_bounds_from_config(config: XRefineConfig, key: str) -> tuple[float, floa
         for layer in sample.layers:
             if layer.name == parts[0] and hasattr(layer, parts[1]):
                 return tuple(getattr(layer, parts[1]))
-    except:
+    except Exception:
         pass
     return (0.0, 1.0)
 
@@ -96,13 +95,11 @@ def optimize_step(
     def objective(trial_vector):
         try:
             p_dict = {k: v for k, v in fixed_params.items()}
-            cursor = 0
-            for info in opt_param_info:
+            for cursor, info in enumerate(opt_param_info):
                 phys_val = trial_vector[cursor] * (info["max"] - info["min"]) + info["min"]
                 p_dict[info["key"]] = torch.tensor(
                     [[phys_val]], dtype=torch.float32, device=target_device
                 )
-                cursor += 1
 
             p_set = ParamSet(p_dict, p_init.layer_names, device=target_device)
 
@@ -130,7 +127,7 @@ def optimize_step(
                             phys_penalty += 10.0 * (r_val - t_val * 0.5)
 
                 return float((loss + phys_penalty).item())
-        except:
+        except Exception:
             return 1e9
 
     sampler = qmc.LatinHypercube(d=total_dim)
@@ -151,12 +148,10 @@ def optimize_step(
     )
 
     final_dict = {k: v for k, v in fixed_params.items()}
-    cursor = 0
-    for info in opt_param_info:
+    for cursor, info in enumerate(opt_param_info):
         phys_val = result.x[cursor] * (info["max"] - info["min"]) + info["min"]
         final_dict[info["key"]] = torch.tensor(
             [[phys_val]], dtype=torch.float32, device=target_device
         )
-        cursor += 1
 
     return ParamSet(final_dict, p_init.layer_names, device=target_device)

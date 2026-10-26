@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self
+from typing import ClassVar, Self
 
 import torch
 from torch import Tensor
@@ -34,7 +34,7 @@ class DynamicParamSet:
     """
 
     # Standard keys for instrument parameters
-    INSTRUMENT_KEYS = {"L", "i0", "bkg", "beam_width", "dq", "tth_offset"}
+    INSTRUMENT_KEYS: ClassVar[set[str]] = {"L", "i0", "bkg", "beam_width", "dq", "tth_offset"}
 
     def __init__(
         self, params: dict[str, Tensor], layer_names: list[str], device: torch.device = None

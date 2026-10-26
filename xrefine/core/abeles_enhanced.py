@@ -12,13 +12,11 @@ IMPROVEMENTS:
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
-from xrefine.physics_utils_enhanced import robust_log10, soft_clamp
+from xrefine.physics_utils_enhanced import soft_clamp
 
 
 def abeles_core(q: Tensor, thickness: Tensor, roughness: Tensor, sld: Tensor) -> Tensor:

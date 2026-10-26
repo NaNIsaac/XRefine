@@ -18,16 +18,15 @@ from xrefine.refine.optimizer import optimize_step
 from xrefine.refine.pipeline import run_real_inference, run_refinement
 
 __all__ = [
-    "run_refinement",
-    "run_real_inference",
+    "CORRELATION",
+    "DEFAULT_CONFIG",
+    "FRINGE_WEIGHTED_LOG",
+    "LINEAR_MSE",
+    "LOG_MSE",
+    "LossFn",
     "RefinementConfig",
     "StageConfig",
-    "DEFAULT_CONFIG",
     "optimize_step",
-    "LossFn",
-    "LOG_MSE",
-    "LINEAR_MSE",
-    "CORRELATION",
-    "FRINGE_WEIGHTED_LOG",
-    "FRINGE_WEIGHTED_LINEAR",
+    "run_real_inference",
+    "run_refinement",
 ]

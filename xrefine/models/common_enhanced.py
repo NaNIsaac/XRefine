@@ -11,11 +11,9 @@ Key improvements:
 
 import math
 from abc import ABC, abstractmethod
-from typing import Any
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from xrefine.config import XRefineConfig
 from xrefine.core.abeles_enhanced import AbelesMatrixEnhanced
@@ -25,8 +23,6 @@ from xrefine.data.normalization import apply_normalization_tensor
 from xrefine.physics_utils_enhanced import (
     curriculum_weight,
     physics_constraint_penalty,
-    robust_log10,
-    soft_clamp,
     soft_clamp_min,
 )
 
@@ -238,7 +234,6 @@ class BasePINNModelEnhanced(nn.Module, ABC):
     @abstractmethod
     def encode(self, x: Tensor) -> Tensor:
         """Subclasses must implement the encoder network"""
-        pass
 
     def forward(
         self, r_obs_log: Tensor, fixed_values: ParamSet | None = None

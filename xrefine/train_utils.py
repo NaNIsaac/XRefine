@@ -1,11 +1,11 @@
 from dataclasses import fields
 from pathlib import Path
 
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from matplotlib import gridspec
+from torch import nn
 
 from xrefine.config import XRefineConfig
 from xrefine.core.structures import ParamSet
@@ -107,7 +107,7 @@ def save_pinn_report(
     step: int,
 ):
     """Plot a combined PINN status report."""
-    fig = plt.figure(figsize=(16, 11))
+    plt.figure(figsize=(16, 11))
     gs = gridspec.GridSpec(2, 2, width_ratios=[1, 1.2], height_ratios=[3, 1])
 
     ax0 = plt.subplot(gs[:, 0])
@@ -147,7 +147,12 @@ def save_pinn_report(
         info_text,
         fontsize=8.5,
         family="monospace",
-        bbox=dict(facecolor="white", alpha=0.9, edgecolor="#34495e", boxstyle="round,pad=1"),
+        bbox={
+            "facecolor": "white",
+            "alpha": 0.9,
+            "edgecolor": "#34495e",
+            "boxstyle": "round,pad=1",
+        },
     )
 
     plt.tight_layout()

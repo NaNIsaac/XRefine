@@ -9,8 +9,7 @@ Structure:
 """
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from xrefine.config import XRefineConfig
 from xrefine.constants import LOG_MASK_VALUE

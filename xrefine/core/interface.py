@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from .abeles import abeles
 from .kinematical import kinematical_approximation

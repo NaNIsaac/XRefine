@@ -20,7 +20,7 @@ def abeles_np(
     roughness = np.atleast_2d(roughness)
     sld = np.atleast_2d(sld)
 
-    batch_size, num_layers = thickness.shape
+    batch_size, _num_layers = thickness.shape
 
     sld = np.concatenate([np.zeros((batch_size, 1)).astype(sld.dtype), sld], -1)[:, None]
     thickness = np.concatenate([np.zeros((batch_size, 1)).astype(thickness.dtype), thickness], -1)[
@@ -91,7 +91,7 @@ def kinematical_approximation_np(
     sld = np.atleast_2d(sld) * 1e-6 + 1e-30j
     substrate_sld = sld[:, -1:]
 
-    batch_size, num_layers = thickness.shape
+    batch_size, _num_layers = thickness.shape
 
     if q.ndim == 1:
         q = q[None]

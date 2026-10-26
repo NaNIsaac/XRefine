@@ -22,7 +22,6 @@ def debug_physics_mismatch():
 
     # Instrument Params
     s_len_val = 20.0  # Sample Length (mm)
-    i0_val = 1.0  # Intensity Scale
     beam_width_val = 0.1  # mm
     wavelength = 1.54
     dq_val = 0.002  # Resolution
@@ -66,7 +65,7 @@ def debug_physics_mismatch():
 
     r_gen_final = gaussian_filter1d(r_gen_foot, sigma=sigma_px, mode="nearest")
 
-    # model path (torch, DifferentiableFootprint)
+    # model path (torch)
     # Config override
     config.instrument.beam_width = beam_width_val
     config.instrument.res = dq_val
