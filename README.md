@@ -12,6 +12,16 @@ Personal research code; several modules are experimental.
 
 XRefine is one of the XRR research branches; its approach (a physics-informed loss through the simulator, multilayer and complex-SLD outputs, instrument parameters predicted by the network, staged DE refinement) is described in the ReflectoLearn master index `docs/xrr-research-index.md`. [ReflectoLearn](https://github.com/NaNIsaac/ReflectoLearn) took the Abeles engine, the unit helpers and the refinement losses from here (ReflectoLearn f35ab56, e3b26d6) but trains with a supervised parameter loss only; the two training approaches have not been compared. No training or evaluation metrics of XRefine are recorded in this repository.
 
+## Reports
+
+XRefine has no reports of its own. What is recorded about it is in the [XRefine section of the XRR research index](https://github.com/NaNIsaac-Research/ReflectoLearn/blob/main/docs/xrr-research-index.md#xrefine) in ReflectoLearn:
+
+- one Optuna study, 5 complete trials of 52, whose objective is the weighted training loss after 15 epochs, not a physical error;
+- one refinement observation (28a6f28): 320 Å In₂O₃ films came out at 1250-1500 Å before the thickness trust window was added;
+- no comparison of the baseline and enhanced models, or of `pipeline` and `pipeline_next`.
+
+The later XRR experiments, which build on XRefine's Abeles engine, are listed in [ReflectoLearn's reports](https://github.com/NaNIsaac-Research/ReflectoLearn/blob/main/docs/reports/README.md). To produce numbers here, run the synthetic refinement benchmark (`xrefine.refine.benchmark`, under Usage) on a checkpoint.
+
 ## Install
 
 Python 3.13 and [uv](https://docs.astral.sh/uv/). `torch==2.9.0` is pulled from the PyTorch CUDA 12.6 index.
