@@ -7,11 +7,11 @@ r_e: Final[float] = 2.8179403227e-5  # AA
 
 
 @overload
-def tth2q(tth: float, wavelen: float = 1.54) -> float: ...
+def tth2q(tth: float, wavelen: float = 1.5406) -> float: ...
 
 
 @overload
-def tth2q(tth: NDArray[np.float64], wavelen: float = 1.54) -> NDArray[np.float64]: ...
+def tth2q(tth: NDArray[np.float64], wavelen: float = 1.5406) -> NDArray[np.float64]: ...
 
 
 def tth2q(tth, wavelen: float = 1.5406):
