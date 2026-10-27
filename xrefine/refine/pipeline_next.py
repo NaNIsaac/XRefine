@@ -535,6 +535,7 @@ def run_real_inference(
                     dq=p_ai.dq if hasattr(p_ai, "dq") else torch.tensor([[0.0]], device=device),
                     gauss_num=11,
                     abeles_func=simulator,
+                    wavelength=wav,
                 )
 
                 # Check current I0
@@ -575,6 +576,7 @@ def run_real_inference(
             dq=dq_val.view(1, 1),
             gauss_num=51,
             abeles_func=simulator,
+            wavelength=xrr_config.instrument.wavelength,
         )
         i0_val = params.i0.item() if hasattr(params, "i0") else 1.0
         bkg_val = params.bkg.item() if hasattr(params, "bkg") else -10.0
