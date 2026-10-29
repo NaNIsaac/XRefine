@@ -10,7 +10,7 @@ Refinement takes the network prediction as the starting point and fits a measure
 
 Personal research code; several modules are experimental.
 
-XRefine is one of the XRR research branches; its approach (a physics-informed loss through the simulator, multilayer and complex-SLD outputs, instrument parameters predicted by the network, staged DE refinement) is described in the ReflectoLearn master index `docs/xrr-research-index.md`. [ReflectoLearn](https://github.com/NaNIsaac/ReflectoLearn) took the Abeles engine, the unit helpers and the refinement losses from here (ReflectoLearn f35ab56, e3b26d6) but trains with a supervised parameter loss only; the two training approaches have not been compared. No training or evaluation metrics of XRefine are recorded in this repository.
+XRefine is one of the XRR research branches; its approach (a physics-informed loss through the simulator, multilayer and complex-SLD outputs, instrument parameters predicted by the network, staged DE refinement) is described in the ReflectoLearn master index `docs/xrr-research-index.md`. [ReflectoLearn](https://github.com/NaNIsaac-Research/ReflectoLearn) took the Abeles engine, the unit helpers and the refinement losses from here (ReflectoLearn f35ab56, e3b26d6) but trains with a supervised parameter loss only; the two training approaches have not been compared. No training or evaluation metrics of XRefine are recorded in this repository.
 
 ## Reports
 
