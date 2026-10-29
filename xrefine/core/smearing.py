@@ -20,9 +20,13 @@ def abeles_constant_smearing(
     gauss_num: int = 51,
     xrr_dq: bool = True,
     abeles_func=None,
+    wavelength: float | None = None,
 ) -> Tensor:
     """
     Abeles reflectivity with instrumental broadening (resolution smearing).
+
+    ``wavelength`` reaches the footprint correction of ``abeles_func``; left as None, the
+    simulator's own default applies, for simulators that take no wavelength.
     """
 
     assert dq is not None
@@ -44,7 +48,8 @@ def abeles_constant_smearing(
 
     # Calculate Reflectivity on linear Q grid
     # curves: (batch, q_lin_num)
-    curves = abeles_func(q_lin, thickness, roughness, sld, sample_length, beam_width)
+    extra = {} if wavelength is None else {"wavelength": wavelength}
+    curves = abeles_func(q_lin, thickness, roughness, sld, sample_length, beam_width, **extra)
 
     # Convolve with resolution kernel
     # Use torch.conv1d with groups=batch_size to apply different kernels per sample.
@@ -109,6 +114,7 @@ def instrument_reflectivity(
             beam_width=beam_width,
             dq=dq,
             abeles_func=simulator,
+            wavelength=wavelength,
         )
     return simulator(
         q=q,

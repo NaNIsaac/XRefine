@@ -360,6 +360,7 @@ def run_real_inference(
             dq=dq_val.view(1, 1),
             gauss_num=51,
             abeles_func=simulator,
+            wavelength=xrr_config.instrument.wavelength,
         )
         i0_val = params.i0.item() if hasattr(params, "i0") else 1.0
         bkg_val = params.bkg.item() if hasattr(params, "bkg") else -10.0
