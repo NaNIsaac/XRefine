@@ -11,6 +11,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: uv python install 3.13
       - run: uv run --with pytest pytest -q
